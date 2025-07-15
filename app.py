@@ -93,6 +93,40 @@ def process_data(raw_data):
     for item in raw_data:
         try:
             author_meta = item.get('authorMeta', {})
+            
+            # Process timestamp - convert from Unix timestamp to readable format
+            create_time = item.get('createTime', 0)
+            if create_time:
+                try:
+                    # Convert Unix timestamp to datetime
+                    timestamp = datetime.fromtimestamp(create_time)
+                    formatted_timestamp = timestamp.strftime('%Y-%m-%d %H:%M:%S')
+                    
+                    # Calculate how many days ago
+                    days_ago = (datetime.now() - timestamp).days
+                    if days_ago == 0:
+                        freshness = "Today"
+                    elif days_ago == 1:
+                        freshness = "1 day ago"
+                    elif days_ago < 7:
+                        freshness = f"{days_ago} days ago"
+                    elif days_ago < 30:
+                        weeks = days_ago // 7
+                        freshness = f"{weeks} week{'s' if weeks > 1 else ''} ago"
+                    elif days_ago < 365:
+                        months = days_ago // 30
+                        freshness = f"{months} month{'s' if months > 1 else ''} ago"
+                    else:
+                        years = days_ago // 365
+                        freshness = f"{years} year{'s' if years > 1 else ''} ago"
+                        
+                except (ValueError, OSError):
+                    formatted_timestamp = "Unknown"
+                    freshness = "Unknown"
+            else:
+                formatted_timestamp = "Unknown"
+                freshness = "Unknown"
+            
             processed_item = {
                 'author': author_meta.get('name', 'Unknown'),
                 'author_verified': author_meta.get('verified', False),
@@ -101,6 +135,8 @@ def process_data(raw_data):
                 'shares': item.get('shareCount', 0),
                 'comments': item.get('commentCount', 0),
                 'views': item.get('playCount', 0),
+                'data_freshness': freshness,
+                'timestamp': formatted_timestamp,
                 'url': f"https://www.tiktok.com/@{author_meta.get('name', '')}/video/{item.get('id', '')}"
             }
             processed.append(processed_item)
@@ -132,11 +168,72 @@ else:
                 with col3:
                     st.metric("Avg Likes", f"{df['likes'].mean():.0f}")
                 
-                # Display data
-                st.dataframe(df, use_container_width=True)
+                # Add freshness filter
+                st.subheader("Filter by Data Freshness")
+                freshness_options = ["All", "Today", "This week", "This month", "Older"]
+                selected_freshness = st.selectbox("Show posts from:", freshness_options)
+                
+                # Filter data based on freshness
+                filtered_df = df.copy()
+                if selected_freshness != "All":
+                    if selected_freshness == "Today":
+                        filtered_df = df[df['data_freshness'] == "Today"]
+                    elif selected_freshness == "This week":
+                        filtered_df = df[df['data_freshness'].str.contains("day|Today", na=False)]
+                    elif selected_freshness == "This month":
+                        filtered_df = df[df['data_freshness'].str.contains("day|week|Today", na=False)]
+                    elif selected_freshness == "Older":
+                        filtered_df = df[df['data_freshness'].str.contains("month|year", na=False)]
+                
+                # Update metrics for filtered data
+                if not filtered_df.empty:
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("Filtered Posts", len(filtered_df))
+                    with col2:
+                        st.metric("Verified Authors", filtered_df['author_verified'].sum())
+                    with col3:
+                        st.metric("Avg Likes", f"{filtered_df['likes'].mean():.0f}")
+                else:
+                    st.warning("No posts match the selected freshness filter.")
+                    filtered_df = df  # Reset to show all data
+                
+                # Display data with column configuration
+                st.dataframe(
+                    filtered_df, 
+                    use_container_width=True,
+                    column_config={
+                        "data_freshness": st.column_config.TextColumn(
+                            "Data Freshness",
+                            help="How recent the post is",
+                            width="medium"
+                        ),
+                        "timestamp": st.column_config.DatetimeColumn(
+                            "Timestamp",
+                            help="Exact date and time of post",
+                            width="medium"
+                        ),
+                        "url": st.column_config.LinkColumn(
+                            "TikTok URL",
+                            help="Link to original TikTok video"
+                        ),
+                        "likes": st.column_config.NumberColumn(
+                            "Likes",
+                            format="%d"
+                        ),
+                        "views": st.column_config.NumberColumn(
+                            "Views", 
+                            format="%d"
+                        ),
+                        "author_verified": st.column_config.CheckboxColumn(
+                            "Verified",
+                            help="Is the author verified?"
+                        )
+                    }
+                )
                 
                 # Download button
-                csv = df.to_csv(index=False)
+                csv = filtered_df.to_csv(index=False)
                 st.download_button(
                     "📥 Download CSV",
                     csv,
