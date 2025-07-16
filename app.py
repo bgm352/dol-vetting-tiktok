@@ -36,9 +36,13 @@ default_query = "doctor" if mode == "By Doctor (DOL Vetting)" else "BrandA"
 query = st.sidebar.text_input("Search Term", value=default_query)
 max_results = st.sidebar.slider("Max TikTok Posts", min_value=5, max_value=50, value=20)
 
-# ------------------
-# Helper Functions
-# ------------------
+# ---- Helper Functions ----
+
+# Helper phrase sets for rationale mimic
+ONCOLOGY_TERMS = ["oncology", "cancer", "monoclonal", "antibody", "checkpoint", "immunotherapy"]
+GI_TERMS = ["biliary tract", "gastrosophageal", "GEA", "GI", "adenocarcinoma", "BTC"]
+RESEARCH_TERMS = ["biomarker", "conference", "abstract", "network", "clinical trial", "peer"]
+BRAND_KEYWORDS = ["ziihera", "zanidatamab", "herceptin", "rituximab", "brandA"]  # Extend as needed
 
 def classify_kol_dol(score):
     if pd.isna(score):
@@ -59,6 +63,66 @@ def classify_sentiment(score):
         return "Negative"
     else:
         return "Neutral"
+
+def generate_llm_dol_rationale(text, author, score, sentiment):
+    """
+    Generate a high-quality rationale, similar to pharma medical affairs DOL notes,
+    based on medical keywords and context found in TikTok post text.
+    """
+    text_low = text.lower()
+    tags = {
+        "onco": any(w in text_low for w in ONCOLOGY_TERMS),
+        "gi": any(w in text_low for w in GI_TERMS),
+        "biomarker": any(w in text_low for w in RESEARCH_TERMS),
+        "brand": any(w in text_low for w in BRAND_KEYWORDS),
+    }        
+
+    strengths = []
+    notes = []
+    # Mimic the style of assessment notes
+    if tags["onco"]:
+        strengths.append("is highly influential and networked in oncology, frequently discussing topics like monoclonal antibody-based therapies")
+    if tags["gi"]:
+        strengths.append("shows deep engagement with GI oncology topics, such as biliary tract cancer and gastroesophageal diseases")
+    if tags["biomarker"]:
+        strengths.append("demonstrates expertise in biomarkers or clinical research, supporting scientific credibility and peer engagement")
+    if tags["brand"]:
+        strengths.append("references specific therapies or drug names relevant to current campaigns")
+
+    # Compose rationale.
+    if strengths:
+        rationale = (
+            f"{author if author else 'This HCP'} {'; '.join(strengths)}."
+            f" Their active posting and professional engagement position them as a highly relevant DOL/KOL candidate."
+        )
+        if score < 8:
+            rationale += (
+                " However, there is limited mention of highly targeted campaign terms, which may reduce suitability for some specialized efforts."
+            )
+    else:
+        # General fallback
+        if score >= 8:
+            rationale = (
+                f"{author if author else 'This creator'} demonstrates scientific authority and active engagement"
+                f", aligning well with DOL criteria for HCP-focused campaigns."
+            )
+        elif score >= 5:
+            rationale = (
+                f"{author if author else 'This creator'} shows moderate relevance and engagement for DOL vetting, though lacks frequent reference to highly specific terms."
+            )
+        else:
+            rationale = (
+                f"{author if author else 'This creator'}'s posts show limited direct relevance or engagement with key medical campaign topics, reducing suitability for DOL roles."
+            )
+    return rationale
+
+def generate_brand_sentiment_rationale(text, sentiment):
+    if sentiment == "Positive":
+        return f"Post expresses a favorable opinion toward the brand or therapy, highlighting benefits or positive experiences: \"{text[:80]}...\""
+    elif sentiment == "Negative":
+        return f"Critical statements or negative tone toward brand detected: \"{text[:80]}...\""
+    else:
+        return f"Post is neutral or informational with no clearly identified sentiment: \"{text[:80]}...\""
 
 @st.cache_data(show_spinner=False)
 def run_scraper(token, query, max_results):
@@ -128,30 +192,19 @@ def process_data(raw_data):
             else:
                 freshness = f"{days_ago // 365} years ago"
 
-            # Sentiment
+            # Sentiment analysis
             blob = TextBlob(text)
             polarity = blob.sentiment.polarity
             sentiment = classify_sentiment(polarity)
-            
-            # Scoring logic
+
             dol_score = max(min(round((polarity * 10) + 5), 10), 1)
             kol_dol = classify_kol_dol(dol_score)
 
-            # Reasoning / Notes
+            # Generate rationale for score ("LLM DOL Score Rationale")
             if mode == "By Doctor (DOL Vetting)":
-                if kol_dol == "KOL":
-                    rationale = f"Strong positive sentiment and high engagement. Post suggests credibility and relevance (score: {dol_score})."
-                elif kol_dol == "DOL":
-                    rationale = f"Moderate sentiment or reach. Post shows some relevance to audience (score: {dol_score})."
-                else:
-                    rationale = f"Low sentiment or vague topic. Post may not align well (score: {dol_score})."
+                llm_rationale = generate_llm_dol_rationale(text, author, dol_score, sentiment)
             else:
-                if sentiment == "Positive":
-                    rationale = f"Post expression is favorable toward brand or product. (score: {polarity:.2f})"
-                elif sentiment == "Negative":
-                    rationale = f"Criticism or negative phrases detected. (score: {polarity:.2f})"
-                else:
-                    rationale = f"Neutral tone. No strong sentiment detected. (score: {polarity:.2f})"
+                llm_rationale = generate_brand_sentiment_rationale(text, sentiment)
 
             results.append({
                 "Author": author,
@@ -170,9 +223,9 @@ def process_data(raw_data):
                 "Sentiment Score": round(polarity, 3),
                 "Brand Sentiment Label": sentiment,
                 "Brand Sentiment Display": f"{'😊' if sentiment == 'Positive' else '😞' if sentiment == 'Negative' else '😐'} {sentiment}",
-                "Scoring Notes": rationale
+                "LLM DOL Score Rationale": llm_rationale
             })
-        except:
+        except Exception as e:
             continue
     return pd.DataFrame(results)
 
@@ -219,11 +272,10 @@ else:
             st.subheader("📋 TikTok Posts")
 
             cols = ["Author", "Verified", "Text", "Freshness", "Likes", "Views", "Comments", "Shares", "Timestamp", "URL"]
-
             if mode == "By Doctor (DOL Vetting)":
-                cols += ["KOL/DOL Status Display", "DOL Score", "Scoring Notes"]
+                cols += ["KOL/DOL Status Display", "DOL Score", "LLM DOL Score Rationale"]
             else:
-                cols += ["Brand Sentiment Display", "Sentiment Score", "Scoring Notes"]
+                cols += ["Brand Sentiment Display", "Sentiment Score", "LLM DOL Score Rationale"]
 
             st.dataframe(df_filtered[cols], use_container_width=True)
 
@@ -234,4 +286,3 @@ else:
                 file_name=f"{mode.replace(' ', '_').lower()}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
                 mime="text/csv"
             )
-
