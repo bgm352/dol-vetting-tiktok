@@ -3,7 +3,15 @@ import requests
 import pandas as pd
 import time
 from datetime import datetime
-from textblob import TextBlob
+
+# Install TextBlob NLP and corpora
+try:
+    from textblob import TextBlob
+    import nltk
+    nltk.download("punkt")
+except ModuleNotFoundError:
+    st.error("Required packages not installed. Please ensure textblob and nltk are listed in requirements.txt.")
+    raise
 
 # ------------------
 # Page Setup
@@ -121,12 +129,29 @@ def process_data(raw_data):
                 freshness = f"{days_ago // 365} years ago"
 
             # Sentiment
-            polarity = TextBlob(text).sentiment.polarity
+            blob = TextBlob(text)
+            polarity = blob.sentiment.polarity
             sentiment = classify_sentiment(polarity)
-
-            # Assign dummy DOL score (placeholder)
+            
+            # Scoring logic
             dol_score = max(min(round((polarity * 10) + 5), 10), 1)
             kol_dol = classify_kol_dol(dol_score)
+
+            # Reasoning / Notes
+            if mode == "By Doctor (DOL Vetting)":
+                if kol_dol == "KOL":
+                    rationale = f"Strong positive sentiment and high engagement. Post suggests credibility and relevance (score: {dol_score})."
+                elif kol_dol == "DOL":
+                    rationale = f"Moderate sentiment or reach. Post shows some relevance to audience (score: {dol_score})."
+                else:
+                    rationale = f"Low sentiment or vague topic. Post may not align well (score: {dol_score})."
+            else:
+                if sentiment == "Positive":
+                    rationale = f"Post expression is favorable toward brand or product. (score: {polarity:.2f})"
+                elif sentiment == "Negative":
+                    rationale = f"Criticism or negative phrases detected. (score: {polarity:.2f})"
+                else:
+                    rationale = f"Neutral tone. No strong sentiment detected. (score: {polarity:.2f})"
 
             results.append({
                 "Author": author,
@@ -145,6 +170,7 @@ def process_data(raw_data):
                 "Sentiment Score": round(polarity, 3),
                 "Brand Sentiment Label": sentiment,
                 "Brand Sentiment Display": f"{'😊' if sentiment == 'Positive' else '😞' if sentiment == 'Negative' else '😐'} {sentiment}",
+                "Scoring Notes": rationale
             })
         except:
             continue
@@ -154,19 +180,19 @@ def process_data(raw_data):
 # Main Flow
 # ------------------
 if not apify_token:
-    st.info("Enter Apify API token to begin.")
+    st.info("Enter your Apify API token to start.")
 else:
     if st.button("🚀 Run Analysis"):
         data = run_scraper(apify_token, query, max_results)
         if not data:
-            st.warning("No data found for the query.")
+            st.warning("No data found.")
         else:
             df = process_data(data)
             st.success(f"Scraped {len(df)} posts.")
 
-            # --- Filters ---
-            st.subheader("🧼 Filter by Freshness")
-            freshness_filter = st.selectbox("Filter by:", ["All", "Today", "This week", "This month", "Older"])
+            # Filter by freshness
+            st.subheader("📅 Filter by Freshness")
+            freshness_filter = st.selectbox("Select:", ["All", "Today", "This week", "This month", "Older"])
             df_filtered = df.copy()
             if freshness_filter != "All":
                 if freshness_filter == "Today":
@@ -178,49 +204,34 @@ else:
                 elif freshness_filter == "Older":
                     df_filtered = df[df["Freshness"].str.contains("month|year", na=False)]
 
-            if df_filtered.empty:
-                st.warning("No posts match the filter.")
-                df_filtered = df.copy()
+            st.metric("Filtered Posts", len(df_filtered))
 
-            # --- Output Metrics ---
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric("Posts", len(df_filtered))
-            col2.metric("Avg Likes", f"{df_filtered['Likes'].mean():.0f}")
-            col3.metric("Total Views", f"{df_filtered['Views'].sum():,}")
-            col4.metric("Verified Authors", df_filtered['Verified'].sum())
-
-            # --- Mode Specific Display ---
             if mode == "By Brand (Brand Sentiment)":
-                st.subheader("💬 Brand Sentiment")
+                st.subheader("💬 Brand Sentiment Summary")
                 st.bar_chart(df_filtered['Brand Sentiment Label'].value_counts())
-                sent_avg = df_filtered['Sentiment Score'].mean()
-                st.metric("Avg Sentiment Score", f"{sent_avg:.2f}")
-
-            if mode == "By Doctor (DOL Vetting)":
-                st.subheader("🌟 DOL / KOL Classification")
-                st.bar_chart(df_filtered['KOL/DOL Label'].value_counts())
-                score_avg = df_filtered['DOL Score'].mean()
-                st.metric("Avg DOL Score", f"{score_avg:.2f}")
-
-            # --- Display Table ---
-            st.subheader("📋 Results")
-
-            display_cols = [
-                "Author", "Verified", "Text", "Freshness", "Likes", "Views", "Comments", "Shares", "Timestamp", "URL"
-            ]
-
-            if mode == "By Doctor (DOL Vetting)":
-                display_cols += ["KOL/DOL Status Display", "DOL Score"]
+                st.metric("Avg Sentiment Score", f"{df_filtered['Sentiment Score'].mean():.2f}")
             else:
-                display_cols += ["Brand Sentiment Display", "Sentiment Score"]
+                st.subheader("🌟 KOL / DOL Summary")
+                st.bar_chart(df_filtered['KOL/DOL Label'].value_counts())
+                st.metric("Avg DOL Score", f"{df_filtered['DOL Score'].mean():.2f}")
 
-            st.dataframe(df_filtered[display_cols], use_container_width=True)
+            # Display Results Table
+            st.subheader("📋 TikTok Posts")
 
-            # --- Export ---
-            csv = df_filtered.to_csv(index=False)
+            cols = ["Author", "Verified", "Text", "Freshness", "Likes", "Views", "Comments", "Shares", "Timestamp", "URL"]
+
+            if mode == "By Doctor (DOL Vetting)":
+                cols += ["KOL/DOL Status Display", "DOL Score", "Scoring Notes"]
+            else:
+                cols += ["Brand Sentiment Display", "Sentiment Score", "Scoring Notes"]
+
+            st.dataframe(df_filtered[cols], use_container_width=True)
+
+            # Export Button
             st.download_button(
-                label="📥 Download CSV",
-                data=csv,
-                file_name=f'{mode.replace(" ", "_").lower()}_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv',
+                "📥 Download CSV",
+                df_filtered.to_csv(index=False),
+                file_name=f"{mode.replace(' ', '_').lower()}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
                 mime="text/csv"
             )
+
