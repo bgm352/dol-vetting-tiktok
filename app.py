@@ -16,7 +16,7 @@ except ModuleNotFoundError:
 st.set_page_config(page_title="TikTok/Threads Vetting Tool",
                    layout="wide",
                    page_icon="🩺")
-st.title("🩺 TikTok & Threads Vetting Tool (DOL/KOL, Brand, Transcript, Social)")
+st.title("🩺 TikTok Vetting Tool (DOL/KOL)")
 
 # --- SECRETS/API KEYS ---
 SUPADATA_API_KEY = st.secrets.get("SUPADATA_API_KEY") or st.sidebar.text_input(
