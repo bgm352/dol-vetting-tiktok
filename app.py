@@ -14,7 +14,7 @@ except ModuleNotFoundError:
     raise
 
 st.set_page_config(page_title="TikTok/Threads Vetting Tool", layout="wide", page_icon="🩺")
-st.title("🩺 TikTok & Threads Vetting Tool (DOL/KOL, Brand, Transcript, Social)")
+st.title("🩺 TikTok & Threads DOL/KOL Vetting Tool")
 
 # --- API KEY ---
 apify_api_key = st.sidebar.text_input("Apify API Token", type="password", help="Get this from https://console.apify.com/account#/integrations")
