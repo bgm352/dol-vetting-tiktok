@@ -16,57 +16,54 @@ except ModuleNotFoundError:
 st.set_page_config(page_title="TikTok/Threads Vetting Tool",
                    layout="wide",
                    page_icon="🩺")
-st.title("🩺 TikTok Vetting Tool (DOL/KOL)")
+st.title("🩺 TikTok & Threads Vetting Tool (DOL/KOL, Brand, Transcript, Social)")
 
 # --- SECRETS/API KEYS ---
 SUPADATA_API_KEY = st.secrets.get("SUPADATA_API_KEY") or st.sidebar.text_input(
-    "Supadata Transcript API Key", type="password", help="Found in your Supadata dashboard.")
+    "Supadata Transcript API Key", type="password", help="From your Supadata dashboard.")
 apify_api_key = st.sidebar.text_input(
-    "Apify API Token", type="password", help="Get this at https://console.apify.com/account#/integrations")
+    "Apify API Token", type="password", help="Get it from https://console.apify.com/account#/integrations")
 
 # --- PLATFORM MODE ---
 mode = st.sidebar.radio("Scoring Strategy", [
     "By Doctor (DOL Vetting)",
     "By Brand (Brand Sentiment)"
-], help="Choose vetting by Doctor (DOL/KOL) or Brand Sentiment context.")
+], help="DOL/KOL: ranks experts/influencers, Brand: rates brand sentiment.")
 
 query = st.sidebar.text_input(
     "TikTok Search Term",
     value="doctor" if "Doctor" in mode else "brandA",
-    help="What TikTok keyword do you want to analyze?"
+    help="Keyword/topic to search TikTok for."
 )
 max_results = st.sidebar.slider(
-    "Max TikTok Posts", 5, 50, 10,
-    help="How many TikTok posts should be analyzed?"
+    "Max TikTok Posts", 5, 50, 10, help="# of TikTok posts to analyze."
 )
 
 # --- THREADS UX ---
 st.sidebar.header("Meta Threads Scraper")
 threads_enabled = st.sidebar.checkbox("Include Meta Threads Data", value=False)
 threads_username = st.sidebar.text_input(
-    "Threads Username (optional)",
-    value="",
-    help="Optional Threads username (public only)."
+    "Threads Username (optional)", value="", help="Optional, public Threads username."
 )
 
 # --- FAQ / ONBOARDING ---
 with st.sidebar.expander("❓ FAQ & Help"):
     st.markdown("""
     - **How does scoring work?**  
-      Doctor/brand vetting uses sentiment and relevant keyword analysis.
-    - **Is my data private?**  
-      All processing is done per session; your queries are not stored.
+      Doctor/brand vetting uses sentiment + keyword analysis.
+    - **What are my data/privacy rights?**  
+      Processing is per session, your queries aren't stored centrally unless on admin panel.
     - **Want to contribute?**  
-      See the project repo or contact support!
+      See the project repo or email support.
     """)
 
 # --- KEYWORDS for rationale
 ONCOLOGY_TERMS = ["oncology", "cancer", "monoclonal", "checkpoint", "immunotherapy"]
 GI_TERMS = ["biliary tract", "gastric", "gea", "gi", "adenocarcinoma"]
 RESEARCH_TERMS = ["biomarker", "clinical trial", "abstract", "network", "congress"]
-BRAND_TERMS = ["ziihera", "zanidatamab", "brandA", "pd-l1"]  # Extend as needed
+BRAND_TERMS = ["ziihera", "zanidatamab", "brandA", "pd-l1"]
 
-# ----------- SCORING & RATIONALE FUNCTIONS (modularized) ------------------
+# ----------- Modular SCORING & RATIONALE FUNCTIONS ------------------
 
 def classify_kol_dol(score):
     return "KOL" if score >= 8 else "DOL" if score >= 5 else "Not Suitable"
@@ -100,38 +97,68 @@ def generate_rationale(text, transcript, author, score, sentiment, mode):
         if tags["brand"]:
             rationale += ", mentioning monoclonal therapies or campaign drugs specifically"
         if transcript and "not found" not in transcript:
-            rationale += f". Transcript snippet: “{transcript[:90].strip()}...”"
-        elif transcript and "not found" in transcript:
-            rationale += ". No transcript available for in-depth spoken content review."
+            rationale += f'. Transcript snippet: “{transcript[:90].strip()}...”'
+        else:
+            rationale += f". {transcript}"
         rationale += f" (Score: {score}/10)"
     else:
         rationale = f"{name} appears to express {sentiment.lower()} brand sentiment."
         if transcript and "not found" not in transcript:
-            rationale += f" Transcript: “{transcript[:90].strip()}...”"
-        elif transcript and "not found" in transcript:
-            rationale += ". No transcript available for sentiment of spoken content."
+            rationale += f' Transcript: “{transcript[:90].strip()}...”'
+        else:
+            rationale += f". {transcript}"
     return rationale
 
-# --------------- HELPERS -------------------
-
+# ----------- IMPROVED SUPADATA TRANSCRIPT FETCHER ---------------
 def fetch_transcript(url, api_key):
-    """Fetch Supadata transcript, gracefully handles errors."""
+    """
+    Supadata transcript fetch.
+    Covers: 'not found', 'unavailable', async job (202), unsupported videos, AI/gen fail.
+    """
     try:
-        resp = requests.get("https://api.supadata.ai/v1/transcript",
-                            params={"url": url, "mode": "generate"},
-                            headers={"x-api-key": api_key}, timeout=30)
+        endpoint = "https://api.supadata.ai/v1/transcript"
+        resp = requests.get(endpoint,
+            params={"url": url, "mode": "generate"},
+            headers={"x-api-key": api_key}, timeout=30)
+
+        # Async job (poll for result)
+        if resp.status_code == 202:
+            job_id = resp.json().get("jobId")
+            if not job_id:
+                return "Transcript not found: AI unable to process or access this video (private, deleted, unsupported, or unstreamable)."
+            # poll up to 1 minute
+            for _ in range(20):
+                job_resp = requests.get(f"{endpoint}/{job_id}",
+                                       headers={"x-api-key": api_key}, timeout=15)
+                job_data = job_resp.json()
+                status = job_data.get("status")
+                if status == "completed":
+                    result = job_data.get("result", {})
+                    content = result.get("content", "") or result.get("transcript", "")
+                    return content if content else "Transcript not found (Supadata returned empty result)."
+                if status == "failed":
+                    return f"Transcript generation failed: {job_data.get('error','Unknown error')}"
+                time.sleep(3)
+            return "Transcript not found: AI processing timed out."
+        # Regular response
         data = resp.json() if resp.ok else {}
-        t = data.get("transcript", "")
+        if "error" in data:
+            if data["error"] == "transcript-unavailable":
+                return "Transcript not found: Video has no subtitles and AI could not generate one (private, not streamable, or unsupported format)."
+            if data["error"] == "invalid-request":
+                return "Transcript not found: Invalid request parameters to Supadata API."
+            return f"Transcript not found: {data.get('message', 'Unknown API error')}"
+        t = data.get("transcript", "") or data.get("content", "")
         if isinstance(t, list):
-            return " ".join(x.get("text","") for x in t)
-        return t or "Transcript not found"
-    except Exception:
-        return "Transcript not found"
+            return " ".join(x.get("text", "") for x in t)
+        return t or "Transcript not found (Supadata returned nothing)."
+    except Exception as e:
+        return f"Transcript not found due to error: {str(e)}"
 
 # --- TIKTOK SCRAPER ---
 @st.cache_data(show_spinner=False)
 def run_apify_scraper(api_key, query, max_results):
-    """Get TikTok posts from Apify scraper"""
+    """Get TikTok posts via Apify"""
     try:
         run_url = "https://api.apify.com/v2/acts/clockworks~tiktok-scraper/runs"
         start = requests.post(run_url, headers={"Authorization": f"Bearer {api_key}"}, json={
@@ -190,10 +217,10 @@ def process_posts(posts, supa_key):
             continue
     return pd.DataFrame(results)
 
-# --- THREADS SCRAPER: fixed logic for new Apify API behaviors ---
+# --- THREADS SCRAPER (robust) ---
 def run_threads_scraper(apify_token, username, max_results=10):
     """
-    Run Apify Threads Scraper for a Threads username, robustly handles job and data retrieval.
+    Run Apify Threads Scraper for a Threads username, robustly handles async job.
     """
     if not username:
         return []
@@ -248,7 +275,7 @@ def process_threads_data(raw_posts):
             continue
     return pd.DataFrame(rows)
 
-# ----------- SESSION-LEVEL GAMIFICATION & ANALYTICS --------------------
+# ----------- SESSION-LEVEL GAMIFICATION, FEEDBACK, & ANALYTICS -----------
 if "top_kols" not in st.session_state:
     st.session_state["top_kols"] = []
 if "analysis_count" not in st.session_state:
@@ -325,7 +352,6 @@ else:
     st.info("🔑 Please provide both Apify and Supadata API keys to begin.")
 
 # --------- ADMIN PANEL HOOKS / Usage Analytics (for future) -------------
-# You can route a URL param or user role here!
 if st.sidebar.checkbox("Show Analytics (Admin only)"):
     st.subheader("🔎 Usage Analytics")
     st.json({
@@ -334,12 +360,10 @@ if st.sidebar.checkbox("Show Analytics (Admin only)"):
         "unique_DOL/KOLs": st.session_state["top_kols"]
     })
 
-# ------- TO DOs implemented in above code via session state, modular scoring, FAQ, feedback, onboarding, analytics, gamification, personalization. ----------
-# ------- For true persistence: connect a lightweight DB or logging for feedback, analyses, etc. ----------
-
 # ------------ requirements.txt ----------
 # streamlit
 # requests
 # pandas
 # textblob
 # nltk
+
