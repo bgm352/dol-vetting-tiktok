@@ -1,4 +1,8 @@
 streamlit
-pandas
+apify-client
 requests
+pandas
 textblob
+nltk
+openai
+google-generativeai
