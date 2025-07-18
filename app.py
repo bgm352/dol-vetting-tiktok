@@ -5,7 +5,6 @@ import time
 from datetime import datetime
 import nltk
 
-# Setup & Package Guards
 try:
     from apify_client import ApifyClient
 except ModuleNotFoundError:
@@ -46,26 +45,14 @@ GI_TERMS = ["biliary tract", "gastric", "gea", "gi", "adenocarcinoma"]
 RESEARCH_TERMS = ["biomarker", "clinical trial", "abstract", "network", "congress"]
 BRAND_TERMS = ["ziihera", "zanidatamab", "brandA", "pd-l1"]
 
-# ---- State initialization ----
 for key, default in [
-    ("top_kols", []),
-    ("analysis_count", 0),
-    ("feedback_logs", []),
-    ("last_fetch_time", None),
-    ("llm_notes_text", ""),
-    ("llm_score_result", ""),
-    ("tiktok_df", pd.DataFrame()),
+    ("top_kols", []), ("analysis_count", 0), ("feedback_logs", []),
+    ("last_fetch_time", None), ("llm_notes_text", ""), ("llm_score_result", ""), ("tiktok_df", pd.DataFrame())
 ]:
-    if key not in st.session_state:
-        st.session_state[key] = default
+    if key not in st.session_state: st.session_state[key] = default
 
-# --- Helper Functions ---
-
-def classify_kol_dol(score):
-    return "KOL" if score >= 8 else "DOL" if score >= 5 else "Not Suitable"
-
-def classify_sentiment(score):
-    return "Positive" if score > 0.15 else "Negative" if score < -0.15 else "Neutral"
+def classify_kol_dol(score): return "KOL" if score >= 8 else "DOL" if score >= 5 else "Not Suitable"
+def classify_sentiment(score): return "Positive" if score > 0.15 else "Negative" if score < -0.15 else "Neutral"
 
 def generate_rationale(text, transcript, author, score, sentiment, mode):
     all_text = f"{text or ''} {transcript or ''}".lower()
@@ -78,12 +65,9 @@ def generate_rationale(text, transcript, author, score, sentiment, mode):
     name = author or "This creator"
     rationale = ""
     if "Doctor" in mode:
-        if score >= 8:
-            rationale = f"{name} is highly influential,"
-        elif score >= 5:
-            rationale = f"{name} has moderate relevance,"
-        else:
-            rationale = f"{name} does not actively discuss core campaign topics,"
+        if score >= 8: rationale = f"{name} is highly influential,"
+        elif score >= 5: rationale = f"{name} has moderate relevance,"
+        else: rationale = f"{name} does not actively discuss core campaign topics,"
         if tags["onco"]: rationale += " frequently engaging in oncology content"
         if tags["gi"]: rationale += ", particularly in GI-focused diseases"
         if tags["res"]: rationale += " and demonstrating strong research credibility"
@@ -189,7 +173,7 @@ def run_apify_scraper_batched(api_key, query, target_total, batch_size):
                     result.append(p)
             offset += batch_size
             pbar.progress(min(1.0, len(result) / float(target_total)))
-            if len(batch_posts) < batch_size: break  # exhausted
+            if len(batch_posts) < batch_size: break
     except Exception as e:
         st.error(f"Apify error: {e}")
         return []
@@ -235,8 +219,6 @@ def process_posts(posts, transcript_map, fetch_time=None, last_fetch_time=None):
             st.warning(f"⛔ Skipped 1 post: {e}")
             continue
     return pd.DataFrame(results)
-
-# ----------- MAIN APP FLOW -----------
 
 if st.button("Go 🚀", use_container_width=True) and apify_api_key:
     st.session_state["analysis_count"] += 1
@@ -293,9 +275,10 @@ Research Notes:
     note_template = st.text_area("Customize LLM Notes Template", value=default_template, height=150)
     if st.button("Generate LLM Vetting Notes"):
         with st.spinner("Calling LLM to generate notes..."):
-            notes_text = generate_llm_notes(filtered_df, note_template, provider=llm_provider,
-                                            openai_api_key=openai_api_key if llm_provider == "OpenAI GPT" else None,
-                                            gemini_api_key=gemini_api_key if llm_provider == "Google Gemini" else None)
+            notes_text = generate_llm_notes(
+                filtered_df, note_template, provider=llm_provider,
+                openai_api_key=openai_api_key if llm_provider == "OpenAI GPT" else None,
+                gemini_api_key=gemini_api_key if llm_provider == "Google Gemini" else None)
         st.session_state["llm_notes_text"] = notes_text
         st.session_state["llm_score_result"] = ""  # Clear previous
 
@@ -318,5 +301,4 @@ Research Notes:
     if st.session_state["llm_score_result"]:
         st.markdown("#### LLM DOL/KOL Score & Rationale")
         st.code(st.session_state["llm_score_result"], language="yaml")
-
 
