@@ -286,8 +286,159 @@ def process_posts(posts, transcript_map, fetch_time=None, last_fetch_time=None):
             continue
     return pd.DataFrame(results)
 
-# ...Threads, feedback, rest of app logic unchanged from previous version...
+# ----------- MAIN APP FLOW -----------
+notes_text = ""
+run_analysis = st.button("Go 🚀", use_container_width=True)
 
-# Your Threads, sidebar, and UI logic follows as before.
+if run_analysis and apify_api_key:
+    st.session_state["analysis_count"] += 1
+
+    fetch_time = datetime.now()
+    last_fetch_time = st.session_state.get("last_fetch_time", None)
+
+    tiktok_data = run_apify_scraper(apify_api_key, query, max_results)
+    if not tiktok_data:
+        st.warning("No TikTok posts found.")
+    else:
+        video_urls = [f'https://www.tiktok.com/@{p.get("authorMeta", {}).get("name","")}/video/{p.get("id","")}' for p in tiktok_data]
+        transcript_map = fetch_tiktok_transcripts_apify(apify_api_key, video_urls)
+        st.success(f"✅ {len(tiktok_data)} TikTok posts scraped.")
+        df = process_posts(
+            tiktok_data,
+            transcript_map=transcript_map,
+            fetch_time=fetch_time,
+            last_fetch_time=last_fetch_time,
+        )
+        st.session_state["last_fetch_time"] = fetch_time
+
+        st.metric("TikTok Posts", len(df))
+
+        if not df.empty:
+            kols = df[df["KOL/DOL Status"].str.contains("KOL|DOL", regex=True)]["Author"].unique().tolist()
+            st.session_state["top_kols"].extend(x for x in kols if x not in st.session_state["top_kols"])
+
+        st.subheader("📋 TikTok Analysis Results")
+
+        tiktok_cols = [
+            "Author", "Text", "Transcript", "Likes", "Views", "Comments", "Shares",
+            "DOL Score", "Sentiment Score", "Post URL", "KOL/DOL Status",
+            "Brand Sentiment Label", "LLM DOL Score Rationale",
+            "Timestamp", "Data Fetched At", "Is New"
+        ]
+
+        display_option = st.radio("Choose display columns:", [
+            "All columns",
+            "Only main info",
+            "Just DOL / Sentiment"
+        ])
+        if display_option == "All columns":
+            columns = tiktok_cols
+        elif display_option == "Only main info":
+            columns = ["Author", "Text", "Likes", "Views", "Comments", "Shares", "DOL Score", "Timestamp", "Is New"]
+        else:
+            columns = ["Author", "KOL/DOL Status", "DOL Score", "Sentiment Score", "Brand Sentiment Label", "Is New"]
+
+        dol_min, dol_max = st.slider("Select DOL Score Range", 1, 10, (1, 10))
+        filtered_df = df[(df["DOL Score"] >= dol_min) & (df["DOL Score"] <= dol_max)]
+
+        st.dataframe(filtered_df[columns], use_container_width=True)
+        st.markdown("**🟢 New** = Collected since your last run; **Old** = Already seen before.")
+
+        st.download_button("Download TikTok CSV", filtered_df[columns].to_csv(index=False),
+                          file_name=f"tiktok_analysis_{datetime.now():%Y%m%d_%H%M%S}.csv", mime="text/csv")
+
+        if st.checkbox("Show Raw TikTok Data"):
+            st.subheader("Raw TikTok Data")
+            st.dataframe(df, use_container_width=True)
+
+        # ------- LLM Notes and Scoring -------
+        st.subheader("📝 LLM Notes & Suitability Scoring")
+        st.markdown("Generate DOL/KOL-style vetting notes and a rationalized score with your chosen LLM.")
+
+        default_template = """Summary:
+Relevance:
+Strengths:
+Weaknesses:
+Red Flags:
+Brand Mentions:
+Research Notes:
+"""
+        note_template = st.text_area("Customize LLM Notes Template", value=default_template, height=150)
+
+        if st.button("Generate LLM Vetting Notes"):
+            with st.spinner("Calling LLM to generate notes..."):
+                notes_text = generate_llm_notes(
+                    filtered_df, note_template, provider=llm_provider,
+                    openai_api_key=openai_api_key if llm_provider == "OpenAI GPT" else None,
+                    gemini_api_key=gemini_api_key if llm_provider == "Google Gemini" else None
+                )
+            st.markdown("#### LLM Vetting Notes")
+            st.markdown(notes_text)
+            st.download_button(
+                label="Download LLM Vetting Notes",
+                data=notes_text,
+                file_name="llm_vetting_notes.txt",
+                mime="text/plain"
+            )
+            if st.button("Generate LLM Score & Rationale"):
+                with st.spinner("Calling LLM for scoring..."):
+                    score_result = generate_llm_score(
+                        notes_text, provider=llm_provider,
+                        openai_api_key=openai_api_key if llm_provider == "OpenAI GPT" else None,
+                        gemini_api_key=gemini_api_key if llm_provider == "Google Gemini" else None
+                    )
+                st.markdown("#### LLM DOL/KOL Score & Rationale")
+                st.code(score_result, language="yaml")
+
+    if threads_enabled and threads_username.strip():
+        st.info("Scraping Threads data...")
+        raw_threads = run_apify_scraper(apify_api_key, threads_username.strip(), max_results)
+        if raw_threads:
+            threads_df = process_posts(raw_threads, transcript_map={}, fetch_time=fetch_time, last_fetch_time=last_fetch_time)
+            st.subheader("🧵 Meta Threads Results")
+            st.dataframe(threads_df, use_container_width=True)
+            st.download_button("Download Threads CSV", threads_df.to_csv(index=False),
+                              file_name="threads_posts.csv")
+        else:
+            st.info("No Threads data found or available.")
+
+    if st.session_state["analysis_count"] >= 5:
+        st.sidebar.success("🎉 Power User: 5+ Analyses!")
+        st.balloons()
+
+    if st.session_state["top_kols"]:
+        st.sidebar.markdown("👩‍⚕️ **Top DOL/KOLs analyzed (this session):**")
+        for author in st.session_state["top_kols"]:
+            st.sidebar.write(f"- {author}")
+
+    feedback = st.radio("Did you find this analysis useful?", ["👍 Yes", "👎 No"], horizontal=True)
+    if feedback:
+        st.session_state["feedback_logs"].append({
+            "time": datetime.now().isoformat(),
+            "feedback": feedback,
+            "last_query": query,
+        })
+        st.info(f"Thanks for your feedback: {feedback}")
+
+elif not apify_api_key:
+    st.info("🔑 Please provide your Apify API key to begin.")
+
+if st.sidebar.checkbox("Show Analytics (Admin only)"):
+    st.subheader("🔎 Usage Analytics")
+    st.json({
+        "analyses_this_session": st.session_state["analysis_count"],
+        "feedback_this_session": st.session_state["feedback_logs"],
+        "unique_DOL/KOLs": st.session_state["top_kols"]
+    })
+
+# ------------ requirements.txt ----------
+# streamlit
+# apify-client
+# requests
+# pandas
+# textblob
+# nltk
+# openai
+# google-generativeai
 
 
