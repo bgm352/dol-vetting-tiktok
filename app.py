@@ -103,20 +103,33 @@ def generate_rationale(text, transcript, author, score, sentiment, mode):
 
 def get_llm_response(prompt, provider, openai_api_key=None, gemini_api_key=None):
     if provider == "OpenAI GPT":
-        if not openai: return "OpenAI SDK not installed."
-        if not openai_api_key: return "No OpenAI key."
-        openai.api_key = openai_api_key
-        resp = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo", messages=[{"role": "user", "content": prompt}],
-            max_tokens=512, temperature=0.6)
-        return resp.choices[0].message['content'].strip()
+        if not openai:
+            return "OpenAI SDK not installed."
+        if not openai_api_key:
+            return "No OpenAI key."
+        try:
+            client = openai.OpenAI(api_key=openai_api_key)
+            response = client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=512,
+                temperature=0.6
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            return f"OpenAI call failed: {e}"
     elif provider == "Google Gemini":
-        if not genai: return "Gemini SDK not installed."
-        if not gemini_api_key: return "No Gemini key."
-        genai.configure(api_key=gemini_api_key)
-        model = genai.GenerativeModel('gemini-pro')
-        resp = model.generate_content(prompt)
-        return getattr(resp, 'text', str(resp)).strip()
+        if not genai:
+            return "Gemini SDK not installed."
+        if not gemini_api_key:
+            return "No Gemini key."
+        try:
+            genai.configure(api_key=gemini_api_key)
+            model = genai.GenerativeModel("gemini-pro")
+            response = model.generate_content(prompt)
+            return getattr(response, "text", str(response)).strip()
+        except Exception as e:
+            return f"Gemini call failed: {e}"
     else:
         return "Unknown provider"
 
@@ -321,4 +334,5 @@ Research Notes:
     if st.session_state["llm_score_result"]:
         st.markdown("#### LLM DOL/KOL Score & Rationale")
         st.code(st.session_state["llm_score_result"], language="yaml")
+
 
