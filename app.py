@@ -38,7 +38,7 @@ gemini_api_key = st.sidebar.text_input("Gemini API Key", type="password") if llm
 st.sidebar.header("Scrape Controls")
 query = st.sidebar.text_input("TikTok Search Term", "doctor")
 target_total = st.sidebar.number_input("Total TikTok Videos", min_value=10, value=200, step=10)
-batch_size = st.sidebar.number_input("Batch Size per Run", min_value=10, max_value=200, value=50)
+batch_size = st.sidebar.number_input("Batch Size per Run", min_value=10, max_value=200, value=20)  # Lower default to 20!
 run_mode = st.sidebar.radio("Analysis Type", ["Doctor Vetting (DOL/KOL)", "Brand Vetting (Sentiment)"])
 
 ONCOLOGY_TERMS = ["oncology", "cancer", "monoclonal", "checkpoint", "immunotherapy"]
@@ -154,6 +154,7 @@ def fetch_tiktok_transcripts_apify(api_token, video_urls):
 
 @st.cache_data(show_spinner=False, persist="disk")
 def run_apify_scraper_batched(api_key, query, target_total, batch_size):
+    MAX_WAIT_SECONDS = 180  # 3 minutes batch hard timeout
     result = []
     run_url = "https://api.apify.com/v2/acts/clockworks~tiktok-scraper/runs"
     offset = 0
@@ -165,10 +166,12 @@ def run_apify_scraper_batched(api_key, query, target_total, batch_size):
             start = requests.post(
                 run_url,
                 headers={"Authorization": f"Bearer {api_key}"},
-                json={"searchQueries":[query], "resultsPerPage":batch_size, "searchType":"keyword", "pageNumber":offset//batch_size}
+                json={"searchQueries": [query], "resultsPerPage": batch_size, "searchType": "keyword", "pageNumber": offset//batch_size}
             ).json()
             run_id = start.get("data", {}).get("id")
-            for i in range(60):
+            # Hard batch timeout logic:
+            batch_start = time.time()
+            while run_id and (time.time() - batch_start) < MAX_WAIT_SECONDS:
                 resp = requests.get(f"{run_url}/{run_id}", headers={"Authorization": f"Bearer {api_key}"}).json()
                 if resp.get("data", {}).get("status") == "SUCCEEDED":
                     dataset_id = resp["data"].get("defaultDatasetId")
@@ -318,3 +321,4 @@ Research Notes:
     if st.session_state["llm_score_result"]:
         st.markdown("#### LLM DOL/KOL Score & Rationale")
         st.code(st.session_state["llm_score_result"], language="yaml")
+
