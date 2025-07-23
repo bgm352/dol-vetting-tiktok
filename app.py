@@ -4,6 +4,7 @@ import pandas as pd
 import time
 from datetime import datetime
 import nltk
+import random
 
 # Setup & Package Guards
 try:
@@ -38,7 +39,7 @@ gemini_api_key = st.sidebar.text_input("Gemini API Key", type="password") if llm
 st.sidebar.header("Scrape Controls")
 query = st.sidebar.text_input("TikTok Search Term", "doctor")
 target_total = st.sidebar.number_input("Total TikTok Videos", min_value=10, value=200, step=10)
-batch_size = st.sidebar.number_input("Batch Size per Run", min_value=10, max_value=200, value=20)  # Lower default to 20!
+batch_size = st.sidebar.number_input("Batch Size per Run", min_value=10, max_value=200, value=20)
 run_mode = st.sidebar.radio("Analysis Type", ["Doctor Vetting (DOL/KOL)", "Brand Vetting (Sentiment)"])
 
 ONCOLOGY_TERMS = ["oncology", "cancer", "monoclonal", "checkpoint", "immunotherapy"]
@@ -101,37 +102,57 @@ def generate_rationale(text, transcript, author, score, sentiment, mode):
             rationale += f". {transcript}"
     return rationale
 
+def retry_with_backoff(func, max_retries=3, base_delay=2):
+    def wrapper(*args, **kwargs):
+        attempt = 0
+        last_exception = None
+        while attempt < max_retries:
+            try:
+                return func(*args, **kwargs)
+            except Exception as e:
+                last_exception = e
+                attempt += 1
+                delay = base_delay * (2 ** (attempt -1)) + random.uniform(0,1)
+                time.sleep(delay)
+        raise last_exception
+    return wrapper
+
+@retry_with_backoff
+def call_openai(prompt, openai_api_key):
+    if not openai:
+        return "OpenAI SDK not installed."
+    if not openai_api_key:
+        return "No OpenAI key."
+    client = openai.OpenAI(api_key=openai_api_key)
+    response = client.chat.completions.create(
+        model="gpt-3.5-turbo",
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=512,
+        temperature=0.6
+    )
+    return response.choices[0].message.content.strip()
+
+@retry_with_backoff
+def call_gemini(prompt, gemini_api_key):
+    if not genai:
+        return "Gemini SDK not installed."
+    if not gemini_api_key:
+        return "No Gemini key."
+    genai.configure(api_key=gemini_api_key)
+    model = genai.GenerativeModel("gemini-2.5-pro")
+    response = model.generate_content(prompt)
+    return getattr(response, "text", str(response)).strip()
+
 def get_llm_response(prompt, provider, openai_api_key=None, gemini_api_key=None):
-    if provider == "OpenAI GPT":
-        if not openai:
-            return "OpenAI SDK not installed."
-        if not openai_api_key:
-            return "No OpenAI key."
-        try:
-            client = openai.OpenAI(api_key=openai_api_key)
-            response = client.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=512,
-                temperature=0.6
-            )
-            return response.choices[0].message.content.strip()
-        except Exception as e:
-            return f"OpenAI call failed: {e}"
-    elif provider == "Google Gemini":
-        if not genai:
-            return "Gemini SDK not installed."
-        if not gemini_api_key:
-            return "No Gemini key."
-        try:
-            genai.configure(api_key=gemini_api_key)
-            model = genai.GenerativeModel("gemini-pro")
-            response = model.generate_content(prompt)
-            return getattr(response, "text", str(response)).strip()
-        except Exception as e:
-            return f"Gemini call failed: {e}"
-    else:
-        return "Unknown provider"
+    try:
+        if provider == "OpenAI GPT":
+            return call_openai(prompt, openai_api_key)
+        elif provider == "Google Gemini":
+            return call_gemini(prompt, gemini_api_key)
+        else:
+            return "Unknown provider"
+    except Exception as e:
+        return f"{provider} call failed: {e}"
 
 def generate_llm_notes(posts_df, note_template, provider, openai_api_key=None, gemini_api_key=None):
     posts_texts = "\n\n".join([
@@ -334,5 +355,6 @@ Research Notes:
     if st.session_state["llm_score_result"]:
         st.markdown("#### LLM DOL/KOL Score & Rationale")
         st.code(st.session_state["llm_score_result"], language="yaml")
+
 
 
