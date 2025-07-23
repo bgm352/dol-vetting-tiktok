@@ -34,64 +34,112 @@ st.title("🩺 TikTok DOL/KOL Vetting Tool - Multi-Batch, LLM, Export")
 apify_api_key = st.sidebar.text_input("Apify API Token", type="password")
 llm_provider = st.sidebar.selectbox("LLM Provider", ["OpenAI GPT", "Google Gemini"])
 
-# Advanced Options Expander
+# Access key for gated prompt config
+ACCESS_KEY = "your_access_key_here"  # <-- Replace with your secret key
+
 with st.sidebar.expander("Advanced Options: Model and Generation Settings", expanded=True):
-    if llm_provider == "OpenAI GPT":
-        model = st.selectbox(
-            "AI Model",
-            ["gpt-4", "gpt-3.5-turbo", "gpt-4o-mini-2025-04-16"],
-            help="Choose the OpenAI model for generation. gpt-4o-mini is an optimized variant.",
+    access_key_input = st.text_input(
+        "Enter Access Key to View Prompt Configuration 🔑",
+        type="password",
+        key="access_key_input"
+    )
+
+    if access_key_input == ACCESS_KEY:
+        st.success("Access Granted: You can edit prompt configuration.")
+        current_date = datetime.now().strftime("%A, %B %d, %Y, %I:%M %p")
+        st.markdown(f"**Current Date:** {current_date}")
+
+        if llm_provider == "OpenAI GPT":
+            model = st.selectbox(
+                "AI Model",
+                ["gpt-4", "gpt-3.5-turbo", "gpt-4o-mini-2025-04-16"],
+                help="Choose the OpenAI model for generation. gpt-4o-mini is an optimized variant.",
+                key="openai_model"
+            )
+            temperature = st.slider(
+                "Temperature (Optional)",
+                0.0,
+                2.0,
+                0.6,
+                help="Controls randomness. Lower values produce more deterministic output.",
+                key="openai_temperature"
+            )
+            max_tokens = st.number_input(
+                "Max Completion Tokens (Optional)",
+                min_value=0,
+                max_value=4096,
+                value=512,
+                help="Maximum tokens in the response. 0 means no limit.",
+                key="openai_max_tokens"
+            )
+            openai_api_key = st.text_input("OpenAI API Key", type="password", key="openai_api_key")
+            st.info("Max tokens limits generation length. Use higher for detailed responses.")
+        else:  # Google Gemini
+            model = st.selectbox(
+                "AI Model",
+                ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"],
+                help="Select Google Gemini model variant.",
+                key="gemini_model"
+            )
+            temperature = st.slider(
+                "Temperature (Optional)",
+                0.0,
+                2.0,
+                0.6,
+                help="Controls randomness of the output.",
+                key="gemini_temperature"
+            )
+            max_tokens = st.number_input(
+                "Max Completion Tokens (Optional)",
+                min_value=0,
+                max_value=4096,
+                value=512,
+                help="Max tokens limit; 0 means no limit.",
+                key="gemini_max_tokens"
+            )
+            reasoning_effort = st.selectbox(
+                "Reasoning Effort",
+                ["None", "Low", "Medium", "High"],
+                index=0,
+                help="Set amount of reasoning effort: None=off, Low to High increase complexity.",
+                key="gemini_reasoning_effort"
+            )
+            reasoning_summary = st.selectbox(
+                "Reasoning Summary",
+                ["None", "Concise", "Detailed", "Auto"],
+                index=0,
+                help="Whether to include reasoning summary. None=no summary, Concise=brief, Detailed=full, Auto=auto decision.",
+                key="gemini_reasoning_summary"
+            )
+            gemini_api_key = st.text_input("Gemini API Key", type="password", key="gemini_api_key")
+            st.info("Reasoning settings affect output depth and length.")
+
+        prompt_template_default = """Summary:
+Relevance:
+Strengths:
+Weaknesses:
+Red Flags:
+Brand Mentions:
+Research Notes:
+"""
+        prompt_template = st.text_area(
+            "Prompt Template",
+            value=prompt_template_default,
+            height=150,
+            help="Customize the prompt template used to generate vetting notes.",
+            key="prompt_template"
         )
-        temperature = st.slider(
-            "Temperature (Optional)",
-            0.0,
-            2.0,
-            0.6,
-            help="Controls randomness. Lower values produce more deterministic output.",
-        )
-        max_tokens = st.number_input(
-            "Max Completion Tokens (Optional)",
-            min_value=0,
-            max_value=4096,
-            value=512,
-            help="Maximum tokens in the response. 0 means no limit.",
-        )
-        openai_api_key = st.text_input("OpenAI API Key", type="password")
-        st.info("Max tokens limits generation length. Use higher for detailed responses.")
-    else:  # Google Gemini
-        model = st.selectbox(
-            "AI Model",
-            ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"],
-            help="Select Google Gemini model variant.",
-        )
-        temperature = st.slider(
-            "Temperature (Optional)",
-            0.0,
-            2.0,
-            0.6,
-            help="Controls randomness of the output.",
-        )
-        max_tokens = st.number_input(
-            "Max Completion Tokens (Optional)",
-            min_value=0,
-            max_value=4096,
-            value=512,
-            help="Max tokens limit; 0 means no limit.",
-        )
-        reasoning_effort = st.selectbox(
-            "Reasoning Effort",
-            ["None", "Low", "Medium", "High"],
-            index=0,
-            help="Set amount of reasoning effort: None=off, Low to High increase complexity.",
-        )
-        reasoning_summary = st.selectbox(
-            "Reasoning Summary",
-            ["None", "Concise", "Detailed", "Auto"],
-            index=0,
-            help="Whether to include reasoning summary. None=no summary, Concise=brief, Detailed=full, Auto=auto decision.",
-        )
-        gemini_api_key = st.text_input("Gemini API Key", type="password")
-        st.info("Reasoning settings affect output depth and length.")
+    else:
+        st.info("Enter valid Access Key to view Prompt Configuration.")
+        # Set defaults for all advanced params so app code can function without prompt config access
+        model = None
+        temperature = 0.6
+        max_tokens = 512
+        openai_api_key = None
+        gemini_api_key = None
+        reasoning_effort = None
+        reasoning_summary = None
+        prompt_template = "Summary:\nRelevance:\nStrengths:\nWeaknesses:\nRed Flags:\nBrand Mentions:\nResearch Notes:\n"
 
 st.sidebar.header("Scrape Controls")
 query = st.sidebar.text_input("TikTok Search Term", "doctor")
@@ -533,44 +581,38 @@ if not df.empty:
 
     # --- LLM Notes and Scoring (STATEFUL) ---
     st.subheader("📝 LLM Notes & Suitability Scoring")
-    default_template = """Summary:
+    note_template = st.text_area("Customize LLM Notes Template", 
+                                value=st.session_state.get("prompt_template", """Summary:
 Relevance:
 Strengths:
 Weaknesses:
 Red Flags:
 Brand Mentions:
 Research Notes:
-"""
-    note_template = st.text_area("Customize LLM Notes Template", value=default_template, height=150)
+"""),
+                                height=150)
+
     if st.button("Generate LLM Vetting Notes"):
         with st.spinner("Calling LLM to generate notes..."):
             notes_text = generate_llm_notes(
                 filtered_df,
                 note_template,
                 provider=llm_provider,
-                openai_api_key=openai_api_key
-                if llm_provider == "OpenAI GPT"
-                else None,
-                gemini_api_key=gemini_api_key
-                if llm_provider == "Google Gemini"
-                else None,
-                openai_model=model if llm_provider == "OpenAI GPT" else None,
-                openai_temperature=temperature if llm_provider == "OpenAI GPT" else 0.6,
-                openai_max_tokens=max_tokens if llm_provider == "OpenAI GPT" else 512,
-                gemini_model=model if llm_provider == "Google Gemini" else None,
-                gemini_temperature=temperature if llm_provider == "Google Gemini" else 0.6,
-                gemini_max_tokens=max_tokens if llm_provider == "Google Gemini" else 512,
-                gemini_reasoning_effort=reasoning_effort
-                if llm_provider == "Google Gemini"
-                else None,
-                gemini_reasoning_summary=reasoning_summary
-                if llm_provider == "Google Gemini"
-                else None,
+                openai_api_key=st.session_state.get("openai_api_key"),
+                gemini_api_key=st.session_state.get("gemini_api_key"),
+                openai_model=st.session_state.get("openai_model"),
+                openai_temperature=st.session_state.get("openai_temperature", 0.6),
+                openai_max_tokens=st.session_state.get("openai_max_tokens", 512),
+                gemini_model=st.session_state.get("gemini_model"),
+                gemini_temperature=st.session_state.get("gemini_temperature", 0.6),
+                gemini_max_tokens=st.session_state.get("gemini_max_tokens", 512),
+                gemini_reasoning_effort=st.session_state.get("gemini_reasoning_effort"),
+                gemini_reasoning_summary=st.session_state.get("gemini_reasoning_summary"),
             )
         st.session_state["llm_notes_text"] = notes_text
-        st.session_state["llm_score_result"] = ""  # Clear previous
+        st.session_state["llm_score_result"] = ""
 
-    if st.session_state["llm_notes_text"]:
+    if st.session_state.get("llm_notes_text"):
         st.markdown("#### LLM Vetting Notes")
         st.markdown(st.session_state["llm_notes_text"])
         st.download_button(
@@ -584,27 +626,19 @@ Research Notes:
                 score_result = generate_llm_score(
                     st.session_state["llm_notes_text"],
                     provider=llm_provider,
-                    openai_api_key=openai_api_key
-                    if llm_provider == "OpenAI GPT"
-                    else None,
-                    gemini_api_key=gemini_api_key
-                    if llm_provider == "Google Gemini"
-                    else None,
-                    openai_model=model if llm_provider == "OpenAI GPT" else None,
-                    openai_temperature=temperature if llm_provider == "OpenAI GPT" else 0.6,
-                    openai_max_tokens=max_tokens if llm_provider == "OpenAI GPT" else 512,
-                    gemini_model=model if llm_provider == "Google Gemini" else None,
-                    gemini_temperature=temperature if llm_provider == "Google Gemini" else 0.6,
-                    gemini_max_tokens=max_tokens if llm_provider == "Google Gemini" else 512,
-                    gemini_reasoning_effort=reasoning_effort
-                    if llm_provider == "Google Gemini"
-                    else None,
-                    gemini_reasoning_summary=reasoning_summary
-                    if llm_provider == "Google Gemini"
-                    else None,
+                    openai_api_key=st.session_state.get("openai_api_key"),
+                    gemini_api_key=st.session_state.get("gemini_api_key"),
+                    openai_model=st.session_state.get("openai_model"),
+                    openai_temperature=st.session_state.get("openai_temperature", 0.6),
+                    openai_max_tokens=st.session_state.get("openai_max_tokens", 512),
+                    gemini_model=st.session_state.get("gemini_model"),
+                    gemini_temperature=st.session_state.get("gemini_temperature", 0.6),
+                    gemini_max_tokens=st.session_state.get("gemini_max_tokens", 512),
+                    gemini_reasoning_effort=st.session_state.get("gemini_reasoning_effort"),
+                    gemini_reasoning_summary=st.session_state.get("gemini_reasoning_summary"),
                 )
             st.session_state["llm_score_result"] = score_result
 
-    if st.session_state["llm_score_result"]:
+    if st.session_state.get("llm_score_result"):
         st.markdown("#### LLM DOL/KOL Score & Rationale")
         st.code(st.session_state["llm_score_result"], language="yaml")
