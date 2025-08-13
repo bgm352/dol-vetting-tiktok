@@ -4,6 +4,7 @@ import pandas as pd
 import time
 from datetime import datetime
 import nltk
+from openai import OpenAI  # new OpenAI client (v1.x)
 
 # Setup & Package Guards
 try:
@@ -11,10 +12,6 @@ try:
 except ModuleNotFoundError:
     st.error("Install `apify-client` (`pip install apify-client`).")
     st.stop()
-try:
-    import openai
-except ImportError:
-    openai = None
 try:
     import google.generativeai as genai
 except ImportError:
@@ -102,23 +99,37 @@ def generate_rationale(text, transcript, author, score, sentiment, mode):
     return rationale
 
 def get_llm_response(prompt, provider, openai_api_key=None, gemini_api_key=None):
-    if provider == "OpenAI GPT":
-        if not openai: return "OpenAI SDK not installed."
-        if not openai_api_key: return "No OpenAI key."
-        openai.api_key = openai_api_key
-        resp = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo", messages=[{"role": "user", "content": prompt}],
-            max_tokens=512, temperature=0.6)
-        return resp.choices[0].message['content'].strip()
-    elif provider == "Google Gemini":
-        if not genai: return "Gemini SDK not installed."
-        if not gemini_api_key: return "No Gemini key."
-        genai.configure(api_key=gemini_api_key)
-        model = genai.GenerativeModel('gemini-pro')
-        resp = model.generate_content(prompt)
-        return getattr(resp, 'text', str(resp)).strip()
-    else:
-        return "Unknown provider"
+    import traceback
+    try:
+        if provider == "OpenAI GPT":
+            if not openai_api_key:
+                return "No OpenAI key provided."
+            client = OpenAI(api_key=openai_api_key)
+            resp = client.chat.completions.create(
+                model="gpt-4o-mini",  # You can switch model here
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=512,
+                temperature=0.6
+            )
+            return resp.choices[0].message.content.strip()
+
+        elif provider == "Google Gemini":
+            if not genai:
+                return "Gemini SDK not installed."
+            if not gemini_api_key:
+                return "No Gemini key provided."
+            genai.configure(api_key=gemini_api_key)
+            model = genai.GenerativeModel("gemini-pro")
+            resp = model.generate_content(prompt)
+            if hasattr(resp, 'text') and resp.text:
+                return resp.text.strip()
+            elif hasattr(resp, 'candidates') and resp.candidates:
+                return resp.candidates[0].content.parts[0].text.strip()
+            return str(resp)
+        else:
+            return "Unknown provider"
+    except Exception as e:
+        return f"⚠️ LLM call failed: {str(e)}\n{traceback.format_exc()}"
 
 def generate_llm_notes(posts_df, note_template, provider, openai_api_key=None, gemini_api_key=None):
     posts_texts = "\n\n".join([
@@ -237,7 +248,6 @@ def process_posts(posts, transcript_map, fetch_time=None, last_fetch_time=None):
     return pd.DataFrame(results)
 
 # ----------- MAIN APP FLOW -----------
-
 if st.button("Go 🚀", use_container_width=True) and apify_api_key:
     st.session_state["analysis_count"] += 1
     fetch_time = datetime.now()
@@ -271,7 +281,6 @@ if not df.empty:
         columns = ["Author", "Text", "Likes", "Views", "Comments", "Shares", "DOL Score", "Timestamp", "Is New"]
     else:
         columns = ["Author", "KOL/DOL Status", "DOL Score", "Sentiment Score", "Brand Sentiment Label", "Is New"]
-
     dol_min, dol_max = st.slider("Select DOL Score Range", 1, 10, (1, 10))
     filtered_df = df[(df["DOL Score"] >= dol_min) & (df["DOL Score"] <= dol_max)]
     st.dataframe(filtered_df[columns], use_container_width=True)
@@ -298,7 +307,6 @@ Research Notes:
                                             gemini_api_key=gemini_api_key if llm_provider == "Google Gemini" else None)
         st.session_state["llm_notes_text"] = notes_text
         st.session_state["llm_score_result"] = ""  # Clear previous
-
     if st.session_state["llm_notes_text"]:
         st.markdown("#### LLM Vetting Notes")
         st.markdown(st.session_state["llm_notes_text"])
@@ -314,8 +322,8 @@ Research Notes:
                                                   openai_api_key=openai_api_key if llm_provider=="OpenAI GPT" else None,
                                                   gemini_api_key=gemini_api_key if llm_provider=="Google Gemini" else None)
             st.session_state["llm_score_result"] = score_result
-
     if st.session_state["llm_score_result"]:
         st.markdown("#### LLM DOL/KOL Score & Rationale")
         st.code(st.session_state["llm_score_result"], language="yaml")
+
 
