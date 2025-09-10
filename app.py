@@ -5,6 +5,14 @@ import time
 from datetime import datetime
 import nltk
 import random
+import re
+
+# Install and import rapidfuzz for fuzzy string matching
+try:
+    from rapidfuzz import fuzz
+except ModuleNotFoundError:
+    st.error("Install `rapidfuzz` (`pip install rapidfuzz`).")
+    st.stop()
 
 # Setup & Package Guards
 try:
@@ -12,14 +20,17 @@ try:
 except ModuleNotFoundError:
     st.error("Install `apify-client` (`pip install apify-client`).")
     st.stop()
+
 try:
     import openai
 except ImportError:
     openai = None
+
 try:
     import google.generativeai as genai
 except ImportError:
     genai = None
+
 try:
     from textblob import TextBlob
     nltk.download("punkt")
@@ -92,11 +103,21 @@ with st.sidebar.expander("Advanced Options: Model and Generation Settings", expa
         )
         gemini_api_key = st.text_input("Gemini API Key", type="password")
         st.info("Reasoning settings affect output depth and length.")
-
+        
 st.sidebar.header("Scrape Controls")
-query = st.sidebar.text_input("TikTok Search Term", "doctor")
+
+# Multi-line input for batch doctor names
+st.sidebar.subheader("Batch Doctor Vetting")
+doctor_names_text = st.sidebar.text_area(
+    "Enter Doctor Full Names (one per line)",
+    height=150,
+    help="Enter full names (First Last) for batch vetting with fuzzy matching"
+)
+doctor_names = [doc.strip() for doc in doctor_names_text.splitlines() if doc.strip()]
+
+query = st.sidebar.text_input("TikTok Search Term (used if no doctors input)", "doctor")
 target_total = st.sidebar.number_input(
-    "Total TikTok Videos", min_value=10, value=200, step=10
+    "Total TikTok Videos per Doctor", min_value=10, value=100, step=10
 )
 batch_size = st.sidebar.number_input(
     "Batch Size per Run", min_value=10, max_value=200, value=20
@@ -135,14 +156,39 @@ for key, default in [
     if key not in st.session_state:
         st.session_state[key] = default
 
+def normalize_name(name: str) -> str:
+    # Lowercase, remove punctuation, normalize spaces for fuzzy matching
+    name = name.lower()
+    name = re.sub(r"[^\w\s]", "", name)  # remove punctuation
+    name = re.sub(r"\s+", " ", name).strip()
+    return name
+
+def is_name_match(input_name: str, candidate_name: str, threshold: int = 85) -> bool:
+    """
+    Return True if candidate_name matches input_name approximately at or above threshold %
+    Uses token sort ratio to ignore word order differences.
+    """
+    input_name_norm = normalize_name(input_name)
+    candidate_name_norm = normalize_name(candidate_name)
+    score = fuzz.token_sort_ratio(input_name_norm, candidate_name_norm)
+    return score >= threshold
+
+def filter_posts_by_doctor(posts, doctor_full_name, threshold=85):
+    """
+    Filter TikTok posts where author's name fuzzy matches the doctor full name.
+    """
+    filtered = []
+    for post in posts:
+        author = post.get("authorMeta", {}).get("name", "")
+        if is_name_match(doctor_full_name, author, threshold):
+            filtered.append(post)
+    return filtered
 
 def classify_kol_dol(score):
     return "KOL" if score >= 8 else "DOL" if score >= 5 else "Not Suitable"
 
-
 def classify_sentiment(score):
     return "Positive" if score > 0.15 else "Negative" if score < -0.15 else "Neutral"
-
 
 def generate_rationale(text, transcript, author, score, sentiment, mode):
     all_text = f"{text or ''} {transcript or ''}".lower()
@@ -182,7 +228,6 @@ def generate_rationale(text, transcript, author, score, sentiment, mode):
             rationale += f". {transcript}"
     return rationale
 
-
 def retry_with_backoff(func, max_retries=3, base_delay=2):
     def wrapper(*args, **kwargs):
         attempt = 0
@@ -196,9 +241,7 @@ def retry_with_backoff(func, max_retries=3, base_delay=2):
                 delay = base_delay * (2 ** (attempt - 1)) + random.uniform(0, 1)
                 time.sleep(delay)
         raise last_exception
-
     return wrapper
-
 
 @retry_with_backoff
 def call_openai(prompt, openai_api_key, model, temperature, max_tokens):
@@ -216,7 +259,6 @@ def call_openai(prompt, openai_api_key, model, temperature, max_tokens):
         kwargs["max_tokens"] = max_tokens
     response = client.chat.completions.create(**kwargs)
     return response.choices[0].message.content.strip()
-
 
 @retry_with_backoff
 def call_gemini(
@@ -245,7 +287,6 @@ def call_gemini(
         params["reasoning_summary"] = reasoning_summary.lower()
     response = model_obj.generate_content(**params)
     return getattr(response, "text", str(response)).strip()
-
 
 def get_llm_response(
     prompt,
@@ -281,7 +322,6 @@ def get_llm_response(
     except Exception as e:
         return f"{provider} call failed: {e}"
 
-
 def generate_llm_notes(
     posts_df,
     note_template,
@@ -313,7 +353,6 @@ Return in markdown, each section with a title."""
                             gemini_model, gemini_temperature, gemini_max_tokens,
                             gemini_reasoning_effort, gemini_reasoning_summary)
 
-
 def generate_llm_score(
     notes,
     provider,
@@ -339,7 +378,6 @@ rationale: <short explanation>
                             gemini_model, gemini_temperature, gemini_max_tokens,
                             gemini_reasoning_effort, gemini_reasoning_summary)
 
-
 def fetch_tiktok_transcripts_apify(api_token, video_urls):
     client = ApifyClient(api_token)
     run_input = {"videos": video_urls}
@@ -350,7 +388,6 @@ def fetch_tiktok_transcripts_apify(api_token, video_urls):
         transcript = item.get("transcript", "")
         transcripts[video_id] = transcript
     return transcripts
-
 
 @st.cache_data(show_spinner=False, persist="disk")
 def run_apify_scraper_batched(api_key, query, target_total, batch_size):
@@ -404,7 +441,6 @@ def run_apify_scraper_batched(api_key, query, target_total, batch_size):
     pbar.progress(1.0)
     return result[:target_total]
 
-
 def process_posts(posts, transcript_map, fetch_time=None, last_fetch_time=None):
     results = []
     for i, post in enumerate(posts):
@@ -447,33 +483,70 @@ def process_posts(posts, transcript_map, fetch_time=None, last_fetch_time=None):
             continue
     return pd.DataFrame(results)
 
-
 # ----------- MAIN APP FLOW -----------
 
 if st.button("Go 🚀", use_container_width=True) and apify_api_key:
     st.session_state["analysis_count"] += 1
     fetch_time = datetime.now()
     last_fetch_time = st.session_state["last_fetch_time"]
-    tiktok_data = run_apify_scraper_batched(apify_api_key, query, int(target_total), int(batch_size))
-    if not tiktok_data:
-        st.warning("No TikTok posts found.")
-    else:
-        video_urls = [
-            f'https://www.tiktok.com/@{p.get("authorMeta", {}).get("name","")}/video/{p.get("id","")}'
-            for p in tiktok_data
-        ]
-        transcript_map = fetch_tiktok_transcripts_apify(apify_api_key, video_urls)
-        st.success(f"✅ {len(tiktok_data)} TikTok posts scraped.")
-        df = process_posts(tiktok_data, transcript_map=transcript_map, fetch_time=fetch_time, last_fetch_time=last_fetch_time)
-        st.session_state["last_fetch_time"] = fetch_time
-        st.session_state["tiktok_df"] = df
 
+    all_results = []
+
+    if doctor_names:
+        # Batch process each doctor with fuzzy name filtering
+        for doc_name in doctor_names:
+            st.info(f"Searching posts for doctor: {doc_name}")
+            raw_posts = run_apify_scraper_batched(apify_api_key, doc_name, int(target_total), int(batch_size))
+            if not raw_posts:
+                st.warning(f"No TikTok posts found for {doc_name}.")
+                continue
+            matched_posts = filter_posts_by_doctor(raw_posts, doc_name, threshold=85)
+            if not matched_posts:
+                st.warning(f"No TikTok posts matched fuzzy author name for {doc_name}.")
+                continue
+            video_urls = [
+                f'https://www.tiktok.com/@{p.get("authorMeta", {}).get("name","")}/video/{p.get("id","")}'
+                for p in matched_posts
+            ]
+            transcript_map = fetch_tiktok_transcripts_apify(apify_api_key, video_urls)
+            df = process_posts(matched_posts, transcript_map=transcript_map, fetch_time=fetch_time, last_fetch_time=last_fetch_time)
+            df["Doctor Name"] = doc_name
+            all_results.append(df)
+    else:
+        # Fallback: perform general keyword scraping
+        tiktok_data = run_apify_scraper_batched(apify_api_key, query, int(target_total), int(batch_size))
+        if not tiktok_data:
+            st.warning("No TikTok posts found.")
+        else:
+            video_urls = [
+                f'https://www.tiktok.com/@{p.get("authorMeta", {}).get("name","")}/video/{p.get("id","")}'
+                for p in tiktok_data
+            ]
+            transcript_map = fetch_tiktok_transcripts_apify(apify_api_key, video_urls)
+            df = process_posts(tiktok_data, transcript_map=transcript_map, fetch_time=fetch_time, last_fetch_time=last_fetch_time)
+            all_results.append(df)
+
+    if all_results:
+        combined_df = pd.concat(all_results, ignore_index=True)
+        st.session_state["last_fetch_time"] = fetch_time
+        st.session_state["tiktok_df"] = combined_df
+    else:
+        st.session_state["tiktok_df"] = pd.DataFrame()
 
 df = st.session_state.get("tiktok_df", pd.DataFrame())
+
 if not df.empty:
-    st.metric("TikTok Posts", len(df))
+    st.metric("TikTok Posts Analyzed", len(df))
     st.subheader("📋 TikTok Analysis Results")
+
+    if doctor_names:
+        unique_doctors = df["Doctor Name"].unique().tolist()
+        selected_doctor = st.selectbox("Filter by Doctor", ["All"] + unique_doctors)
+        if selected_doctor != "All":
+            df = df[df["Doctor Name"] == selected_doctor]
+
     tiktok_cols = [
+        "Doctor Name",
         "Author",
         "Text",
         "Transcript",
@@ -491,6 +564,7 @@ if not df.empty:
         "Data Fetched At",
         "Is New",
     ]
+
     display_option = st.radio(
         "Choose display columns:", ["All columns", "Only main info", "Just DOL / Sentiment"]
     )
@@ -498,6 +572,7 @@ if not df.empty:
         columns = tiktok_cols
     elif display_option == "Only main info":
         columns = [
+            "Doctor Name",
             "Author",
             "Text",
             "Likes",
@@ -510,6 +585,7 @@ if not df.empty:
         ]
     else:
         columns = [
+            "Doctor Name",
             "Author",
             "KOL/DOL Status",
             "DOL Score",
@@ -521,12 +597,14 @@ if not df.empty:
     dol_min, dol_max = st.slider("Select DOL Score Range", 1, 10, (1, 10))
     filtered_df = df[(df["DOL Score"] >= dol_min) & (df["DOL Score"] <= dol_max)]
     st.dataframe(filtered_df[columns], use_container_width=True)
+
     st.download_button(
         "Download TikTok CSV",
         filtered_df[columns].to_csv(index=False),
         file_name=f"tiktok_analysis_{datetime.now():%Y%m%d_%H%M%S}.csv",
         mime="text/csv",
     )
+
     if st.checkbox("Show Raw TikTok Data"):
         st.subheader("Raw TikTok Data")
         st.dataframe(df, use_container_width=True)
@@ -548,28 +626,19 @@ Research Notes:
                 filtered_df,
                 note_template,
                 provider=llm_provider,
-                openai_api_key=openai_api_key
-                if llm_provider == "OpenAI GPT"
-                else None,
-                gemini_api_key=gemini_api_key
-                if llm_provider == "Google Gemini"
-                else None,
+                openai_api_key=openai_api_key if llm_provider == "OpenAI GPT" else None,
+                gemini_api_key=gemini_api_key if llm_provider == "Google Gemini" else None,
                 openai_model=model if llm_provider == "OpenAI GPT" else None,
                 openai_temperature=temperature if llm_provider == "OpenAI GPT" else 0.6,
                 openai_max_tokens=max_tokens if llm_provider == "OpenAI GPT" else 512,
                 gemini_model=model if llm_provider == "Google Gemini" else None,
                 gemini_temperature=temperature if llm_provider == "Google Gemini" else 0.6,
                 gemini_max_tokens=max_tokens if llm_provider == "Google Gemini" else 512,
-                gemini_reasoning_effort=reasoning_effort
-                if llm_provider == "Google Gemini"
-                else None,
-                gemini_reasoning_summary=reasoning_summary
-                if llm_provider == "Google Gemini"
-                else None,
+                gemini_reasoning_effort=reasoning_effort if llm_provider == "Google Gemini" else None,
+                gemini_reasoning_summary=reasoning_summary if llm_provider == "Google Gemini" else None,
             )
         st.session_state["llm_notes_text"] = notes_text
         st.session_state["llm_score_result"] = ""  # Clear previous
-
     if st.session_state["llm_notes_text"]:
         st.markdown("#### LLM Vetting Notes")
         st.markdown(st.session_state["llm_notes_text"])
@@ -584,27 +653,18 @@ Research Notes:
                 score_result = generate_llm_score(
                     st.session_state["llm_notes_text"],
                     provider=llm_provider,
-                    openai_api_key=openai_api_key
-                    if llm_provider == "OpenAI GPT"
-                    else None,
-                    gemini_api_key=gemini_api_key
-                    if llm_provider == "Google Gemini"
-                    else None,
+                    openai_api_key=openai_api_key if llm_provider == "OpenAI GPT" else None,
+                    gemini_api_key=gemini_api_key if llm_provider == "Google Gemini" else None,
                     openai_model=model if llm_provider == "OpenAI GPT" else None,
                     openai_temperature=temperature if llm_provider == "OpenAI GPT" else 0.6,
                     openai_max_tokens=max_tokens if llm_provider == "OpenAI GPT" else 512,
                     gemini_model=model if llm_provider == "Google Gemini" else None,
                     gemini_temperature=temperature if llm_provider == "Google Gemini" else 0.6,
                     gemini_max_tokens=max_tokens if llm_provider == "Google Gemini" else 512,
-                    gemini_reasoning_effort=reasoning_effort
-                    if llm_provider == "Google Gemini"
-                    else None,
-                    gemini_reasoning_summary=reasoning_summary
-                    if llm_provider == "Google Gemini"
-                    else None,
+                    gemini_reasoning_effort=reasoning_effort if llm_provider == "Google Gemini" else None,
+                    gemini_reasoning_summary=reasoning_summary if llm_provider == "Google Gemini" else None,
                 )
             st.session_state["llm_score_result"] = score_result
-
     if st.session_state["llm_score_result"]:
         st.markdown("#### LLM DOL/KOL Score & Rationale")
         st.code(st.session_state["llm_score_result"], language="yaml")
