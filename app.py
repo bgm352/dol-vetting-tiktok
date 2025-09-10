@@ -47,6 +47,7 @@ st.title("🩺 TikTok DOL/KOL Vetting Tool - Multi-Batch, LLM, Export")
 
 apify_api_key = st.sidebar.text_input("Apify API Token", type="password")
 llm_provider = st.sidebar.selectbox("LLM Provider", ["OpenAI GPT", "Google Gemini"])
+
 with st.sidebar.expander("Advanced Options: Model and Generation Settings", expanded=True):
     if llm_provider == "OpenAI GPT":
         model = st.selectbox(
@@ -54,12 +55,8 @@ with st.sidebar.expander("Advanced Options: Model and Generation Settings", expa
             ["gpt-4", "gpt-3.5-turbo", "gpt-4o-mini-2025-04-16"],
             help="Choose the OpenAI model for generation. gpt-4o-mini is an optimized variant.",
         )
-        temperature = st.slider(
-            "Temperature (Optional)", 0.0, 2.0, 0.6, help="Controls randomness. Lower values produce more deterministic output."
-        )
-        max_tokens = st.number_input(
-            "Max Completion Tokens (Optional)", min_value=0, max_value=4096, value=512, help="Maximum tokens in the response. 0 means no limit."
-        )
+        temperature = st.slider("Temperature (Optional)", 0.0, 2.0, 0.6, help="Controls randomness. Lower values produce more deterministic output.")
+        max_tokens = st.number_input("Max Completion Tokens (Optional)", min_value=0, max_value=4096, value=512, help="Maximum tokens in the response. 0 means no limit.")
         openai_api_key = st.text_input("OpenAI API Key", type="password")
         st.info("Max tokens limits generation length. Use higher for detailed responses.")
     else:
@@ -68,26 +65,16 @@ with st.sidebar.expander("Advanced Options: Model and Generation Settings", expa
             ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"],
             help="Select Google Gemini model variant.",
         )
-        temperature = st.slider(
-            "Temperature (Optional)", 0.0, 2.0, 0.6, help="Controls randomness of the output."
-        )
-        max_tokens = st.number_input(
-            "Max Completion Tokens (Optional)", min_value=0, max_value=4096, value=512, help="Max tokens limit; 0 means no limit."
-        )
-        reasoning_effort = st.selectbox(
-            "Reasoning Effort", ["None", "Low", "Medium", "High"], index=0, help="Set amount of reasoning effort."
-        )
-        reasoning_summary = st.selectbox(
-            "Reasoning Summary", ["None", "Concise", "Detailed", "Auto"], index=0, help="Whether to include reasoning summary."
-        )
+        temperature = st.slider("Temperature (Optional)", 0.0, 2.0, 0.6, help="Controls randomness of the output.")
+        max_tokens = st.number_input("Max Completion Tokens (Optional)", min_value=0, max_value=4096, value=512, help="Max tokens limit; 0 means no limit.")
+        reasoning_effort = st.selectbox("Reasoning Effort", ["None", "Low", "Medium", "High"], index=0, help="Set amount of reasoning effort.")
+        reasoning_summary = st.selectbox("Reasoning Summary", ["None", "Concise", "Detailed", "Auto"], index=0, help="Whether to include reasoning summary.")
         gemini_api_key = st.text_input("Gemini API Key", type="password")
         st.info("Reasoning settings affect output depth and length.")
 
 st.sidebar.header("Scrape Controls")
 st.sidebar.subheader("Batch Doctor Vetting")
-doctor_names_text = st.sidebar.text_area(
-    "Enter Doctor Full Names (one per line)", height=150, help="Enter full names (First Last) for batch vetting with fuzzy + phonetic matching"
-)
+doctor_names_text = st.sidebar.text_area("Enter Doctor Full Names (one per line)", height=150, help="Enter full names (First Last) for batch vetting with fuzzy + phonetic matching")
 doctor_names = [doc.strip() for doc in doctor_names_text.splitlines() if doc.strip()]
 query = st.sidebar.text_input("TikTok Search Term (used if no doctors input)", "doctor")
 target_total = st.sidebar.number_input("Total TikTok Videos per Doctor", min_value=10, value=100, step=10)
@@ -99,15 +86,7 @@ GI_TERMS = ["biliary tract", "gastric", "gea", "gi", "adenocarcinoma"]
 RESEARCH_TERMS = ["biomarker", "clinical trial", "abstract", "network", "congress"]
 BRAND_TERMS = ["ziihera", "zanidatamab", "brandA", "pd-l1"]
 
-for key, default in [
-    ("top_kols", []),
-    ("analysis_count", 0),
-    ("feedback_logs", []),
-    ("last_fetch_time", None),
-    ("llm_notes_text", ""),
-    ("llm_score_result", ""),
-    ("tiktok_df", pd.DataFrame()),
-]:
+for key, default in [("top_kols", []), ("analysis_count", 0), ("feedback_logs", []), ("last_fetch_time", None), ("llm_notes_text", ""), ("llm_score_result", ""), ("tiktok_df", pd.DataFrame())]:
     if key not in st.session_state:
         st.session_state[key] = default
 
@@ -396,9 +375,7 @@ if not df.empty:
         "Data Fetched At",
         "Is New",
     ]
-    display_option = st.radio(
-        "Choose display columns:", ["All columns", "Only main info", "Just DOL / Sentiment"]
-    )
+    display_option = st.radio("Choose display columns:", ["All columns", "Only main info", "Just DOL / Sentiment"])
     if display_option == "All columns":
         columns = tiktok_cols
     elif display_option == "Only main info":
@@ -502,7 +479,6 @@ Research Notes:
     if st.session_state["llm_score_result"]:
         st.markdown("#### LLM DOL/KOL Score & Rationale")
         st.code(st.session_state["llm_score_result"], language="yaml")
-
 
 
 
