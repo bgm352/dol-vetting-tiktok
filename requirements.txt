@@ -7,3 +7,4 @@ apify-client
 openai
 google-generativeai
 plotly
+rapidfuzz>=3.0.0
