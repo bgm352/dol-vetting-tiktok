@@ -7,25 +7,22 @@ import nltk
 import random
 import re
 
-# Install and import rapidfuzz for fuzzy string matching
 try:
     from rapidfuzz import fuzz
 except ModuleNotFoundError:
-    st.error("Install `rapidfuzz` (`pip install rapidfuzz`).")
+    st.error("Install `rapidfuzz` by running: pip install rapidfuzz")
     st.stop()
 
-# Import Metaphone for phonetic matching
 try:
-    from metaphone import doublemetaphone  # pip install metaphone
+    import jellyfish
 except ModuleNotFoundError:
-    st.error("Install `Metaphone` (`pip install metaphone`).")
+    st.error("Install `jellyfish` by running: pip install jellyfish")
     st.stop()
 
-# Setup & Package Guards
 try:
     from apify_client import ApifyClient
 except ModuleNotFoundError:
-    st.error("Install `apify-client` (`pip install apify-client`).")
+    st.error("Install `apify-client` by running: pip install apify-client")
     st.stop()
 
 try:
@@ -42,17 +39,14 @@ try:
     from textblob import TextBlob
     nltk.download("punkt")
 except ModuleNotFoundError:
-    st.error("Install `textblob` and `nltk`.")
+    st.error("Install `textblob` and `nltk` by running: pip install textblob nltk")
     st.stop()
 
-# App Page Config
 st.set_page_config("TikTok DOL/KOL Vetting Tool", layout="wide", page_icon="🩺")
 st.title("🩺 TikTok DOL/KOL Vetting Tool - Multi-Batch, LLM, Export")
 
-# Sidebar UI Setup
 apify_api_key = st.sidebar.text_input("Apify API Token", type="password")
 llm_provider = st.sidebar.selectbox("LLM Provider", ["OpenAI GPT", "Google Gemini"])
-
 with st.sidebar.expander("Advanced Options: Model and Generation Settings", expanded=True):
     if llm_provider == "OpenAI GPT":
         model = st.selectbox(
@@ -64,11 +58,7 @@ with st.sidebar.expander("Advanced Options: Model and Generation Settings", expa
             "Temperature (Optional)", 0.0, 2.0, 0.6, help="Controls randomness. Lower values produce more deterministic output."
         )
         max_tokens = st.number_input(
-            "Max Completion Tokens (Optional)",
-            min_value=0,
-            max_value=4096,
-            value=512,
-            help="Maximum tokens in the response. 0 means no limit.",
+            "Max Completion Tokens (Optional)", min_value=0, max_value=4096, value=512, help="Maximum tokens in the response. 0 means no limit."
         )
         openai_api_key = st.text_input("OpenAI API Key", type="password")
         st.info("Max tokens limits generation length. Use higher for detailed responses.")
@@ -82,35 +72,23 @@ with st.sidebar.expander("Advanced Options: Model and Generation Settings", expa
             "Temperature (Optional)", 0.0, 2.0, 0.6, help="Controls randomness of the output."
         )
         max_tokens = st.number_input(
-            "Max Completion Tokens (Optional)",
-            min_value=0,
-            max_value=4096,
-            value=512,
-            help="Max tokens limit; 0 means no limit.",
+            "Max Completion Tokens (Optional)", min_value=0, max_value=4096, value=512, help="Max tokens limit; 0 means no limit."
         )
         reasoning_effort = st.selectbox(
             "Reasoning Effort", ["None", "Low", "Medium", "High"], index=0, help="Set amount of reasoning effort."
         )
         reasoning_summary = st.selectbox(
-            "Reasoning Summary",
-            ["None", "Concise", "Detailed", "Auto"],
-            index=0,
-            help="Whether to include reasoning summary.",
+            "Reasoning Summary", ["None", "Concise", "Detailed", "Auto"], index=0, help="Whether to include reasoning summary."
         )
         gemini_api_key = st.text_input("Gemini API Key", type="password")
         st.info("Reasoning settings affect output depth and length.")
 
 st.sidebar.header("Scrape Controls")
-
-# Batch doctor names input
 st.sidebar.subheader("Batch Doctor Vetting")
 doctor_names_text = st.sidebar.text_area(
-    "Enter Doctor Full Names (one per line)",
-    height=150,
-    help="Enter full names (First Last) for batch vetting with fuzzy + phonetic matching",
+    "Enter Doctor Full Names (one per line)", height=150, help="Enter full names (First Last) for batch vetting with fuzzy + phonetic matching"
 )
 doctor_names = [doc.strip() for doc in doctor_names_text.splitlines() if doc.strip()]
-
 query = st.sidebar.text_input("TikTok Search Term (used if no doctors input)", "doctor")
 target_total = st.sidebar.number_input("Total TikTok Videos per Doctor", min_value=10, value=100, step=10)
 batch_size = st.sidebar.number_input("Batch Size per Run", min_value=10, max_value=200, value=20)
@@ -121,7 +99,6 @@ GI_TERMS = ["biliary tract", "gastric", "gea", "gi", "adenocarcinoma"]
 RESEARCH_TERMS = ["biomarker", "clinical trial", "abstract", "network", "congress"]
 BRAND_TERMS = ["ziihera", "zanidatamab", "brandA", "pd-l1"]
 
-# Initialize state
 for key, default in [
     ("top_kols", []),
     ("analysis_count", 0),
@@ -134,7 +111,6 @@ for key, default in [
     if key not in st.session_state:
         st.session_state[key] = default
 
-# Utility functions
 def normalize_name(name: str) -> str:
     name = name.lower()
     name = re.sub(r"[^\w\s]", "", name)
@@ -142,18 +118,14 @@ def normalize_name(name: str) -> str:
     return name
 
 def phonetic_match(name1: str, name2: str) -> bool:
-    dm1 = doublemetaphone(name1)
-    dm2 = doublemetaphone(name2)
-    return any(p1 and p2 and p1.lower() == p2.lower() for p1 in dm1 for p2 in dm2)
+    return jellyfish.metaphone(name1) == jellyfish.metaphone(name2)
 
 def is_name_match(input_name: str, candidate_name: str, thresh_token=85, thresh_partial=75) -> bool:
     input_norm = normalize_name(input_name)
     candidate_norm = normalize_name(candidate_name)
-
     token_score = fuzz.token_sort_ratio(input_norm, candidate_norm)
     partial_score = fuzz.partial_ratio(input_norm, candidate_norm)
     phonetic = phonetic_match(input_norm, candidate_norm)
-
     return (token_score >= thresh_token or partial_score >= thresh_partial or phonetic)
 
 def filter_posts_by_doctor(posts, doctor_full_name):
@@ -233,8 +205,6 @@ def retry_with_backoff(func, max_retries=3, base_delay=2):
         raise last_exception
     return wrapper
 
-# Functions for LLM and API calls remain unchanged from previous example
-
 def fetch_tiktok_transcripts_apify(api_token, video_urls):
     client = ApifyClient(api_token)
     run_input = {"videos": video_urls}
@@ -291,7 +261,7 @@ def run_apify_scraper_batched(api_key, query, target_total, batch_size):
             offset += batch_size
             pbar.progress(min(1.0, len(result) / float(target_total)))
             if len(batch_posts) < batch_size:
-                break  # exhausted
+                break
     except Exception as e:
         st.error(f"Apify error: {e}")
         return []
@@ -315,32 +285,29 @@ def process_posts(posts, transcript_map, fetch_time=None, last_fetch_time=None):
             kol_dol_label = classify_kol_dol(dol_score)
             rationale = generate_rationale(text, tscript, author, dol_score, sentiment, run_mode)
             is_new = "🟢 New" if last_fetch_time is None or ts > last_fetch_time else "Old"
-            results.append(
-                {
-                    "Author": author,
-                    "Text": text.strip(),
-                    "Transcript": tscript or "Transcript not found",
-                    "Likes": post.get("diggCount", 0),
-                    "Views": post.get("playCount", 0),
-                    "Comments": post.get("commentCount", 0),
-                    "Shares": post.get("shareCount", 0),
-                    "Timestamp": ts,
-                    "Post URL": url,
-                    "DOL Score": dol_score,
-                    "Sentiment Score": sentiment_score,
-                    "KOL/DOL Status": f"{'🌟' if kol_dol_label == 'KOL' else '👍' if kol_dol_label == 'DOL' else '❌'} {kol_dol_label}",
-                    "Brand Sentiment Label": sentiment,
-                    "LLM DOL Score Rationale": rationale,
-                    "Data Fetched At": fetch_time,
-                    "Is New": is_new,
-                }
-            )
+            results.append({
+                "Author": author,
+                "Text": text.strip(),
+                "Transcript": tscript or "Transcript not found",
+                "Likes": post.get("diggCount", 0),
+                "Views": post.get("playCount", 0),
+                "Comments": post.get("commentCount", 0),
+                "Shares": post.get("shareCount", 0),
+                "Timestamp": ts,
+                "Post URL": url,
+                "DOL Score": dol_score,
+                "Sentiment Score": sentiment_score,
+                "KOL/DOL Status": f"{'🌟' if kol_dol_label == 'KOL' else '👍' if kol_dol_label == 'DOL' else '❌'} {kol_dol_label}",
+                "Brand Sentiment Label": sentiment,
+                "LLM DOL Score Rationale": rationale,
+                "Data Fetched At": fetch_time,
+                "Is New": is_new,
+            })
         except Exception as e:
             st.warning(f"⛔ Skipped 1 post: {e}")
             continue
     return pd.DataFrame(results)
 
-# --- MAIN APP FLOW ---
 if st.button("Go 🚀", use_container_width=True) and apify_api_key:
     st.session_state["analysis_count"] += 1
     fetch_time = datetime.now()
@@ -353,7 +320,6 @@ if st.button("Go 🚀", use_container_width=True) and apify_api_key:
             if not raw_posts:
                 st.warning(f"No TikTok posts found for {doc_name}.")
                 continue
-            # Debugging: Show author similarity scores in expander
             similarity_data = []
             for p in raw_posts:
                 author_name = p.get("authorMeta", {}).get("name", "")
@@ -400,6 +366,7 @@ if st.button("Go 🚀", use_container_width=True) and apify_api_key:
         st.session_state["tiktok_df"] = combined_df
     else:
         st.session_state["tiktok_df"] = pd.DataFrame()
+
 df = st.session_state.get("tiktok_df", pd.DataFrame())
 
 if not df.empty:
@@ -469,7 +436,6 @@ if not df.empty:
     if st.checkbox("Show Raw TikTok Data"):
         st.subheader("Raw TikTok Data")
         st.dataframe(df, use_container_width=True)
-    # Add popup info for DOL/KOL score explanation
     if st.button("What does the DOL/KOL score mean?"):
         st.info(
             """The DOL (Digital Opinion Leader) score is a numerical rating (1–10) that evaluates the relevance and influence of a TikTok content creator in the context of healthcare vetting.
@@ -478,7 +444,6 @@ if not df.empty:
 - **Lower scores (1-4)** represent creators less suitable for campaigns.
 The score is generated based on sentiment, content relevance, and other factors analyzed by AI."""
         )
-    # --- LLM Notes and Scoring (STATEFUL) ---
     st.subheader("📝 LLM Notes & Suitability Scoring")
     default_template = """Summary:
 Relevance:
@@ -537,6 +502,7 @@ Research Notes:
     if st.session_state["llm_score_result"]:
         st.markdown("#### LLM DOL/KOL Score & Rationale")
         st.code(st.session_state["llm_score_result"], language="yaml")
+
 
 
 
