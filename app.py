@@ -58,19 +58,21 @@ with st.sidebar.expander("Advanced Options", expanded=True):
         gemini_api_key = st.text_input("Gemini API Key", type="password")
 
 st.sidebar.header("Scrape Controls")
-doctor_names_text = st.sidebar.text_area(
-    "Enter Doctor Full Names (one per line)", height=150
+search_queries_text = st.sidebar.text_area(
+    "Enter Search Queries (Doctor name, Specialty, Location) one per line",
+    height=200,
+    help="Example: Pashtoon Kasi Medical Oncology New York NY"
 )
-doctor_names = [doc.strip() for doc in doctor_names_text.splitlines() if doc.strip()]
-query = st.sidebar.text_input("TikTok Search Term", "doctor")
-target_total = st.sidebar.number_input("Total TikTok Videos per Doctor", min_value=10, value=100, step=10)
+search_queries = [q.strip() for q in search_queries_text.splitlines() if q.strip()]
+
+target_total = st.sidebar.number_input("Total TikTok Videos per Query", min_value=10, value=100, step=10)
 batch_size = st.sidebar.number_input("Batch Size per Run", min_value=10, max_value=200, value=20)
 run_mode = st.sidebar.radio("Analysis Type", ["Doctor Vetting (DOL/KOL)", "Brand Vetting (Sentiment)"])
 
-ONCOLOGY_TERMS = ["oncology","cancer","monoclonal","checkpoint","immunotherapy"]
-GI_TERMS = ["biliary tract","gastric","gea","gi","adenocarcinoma"]
-RESEARCH_TERMS = ["biomarker","clinical trial","abstract","network","congress"]
-BRAND_TERMS = ["ziihera","zanidatamab","brandA","pd-l1"]
+ONCOLOGY_TERMS = ["oncology", "cancer", "monoclonal", "checkpoint", "immunotherapy"]
+GI_TERMS = ["biliary tract", "gastric", "gea", "gi", "adenocarcinoma"]
+RESEARCH_TERMS = ["biomarker", "clinical trial", "abstract", "network", "congress"]
+BRAND_TERMS = ["ziihera", "zanidatamab", "brandA", "pd-l1"]
 
 for key, default in [
     ("top_kols", []),
@@ -84,13 +86,14 @@ for key, default in [
     if key not in st.session_state:
         st.session_state[key] = default
 
-def normalize_name(name): return re.sub(r"[^\w\s]", "", name.lower()).strip()
-def is_name_match(input_name, candidate_name, threshold=85):
-    return fuzz.token_sort_ratio(normalize_name(input_name), normalize_name(candidate_name)) >= threshold
-def filter_posts_by_doctor(posts, doctor_full_name, threshold=85):
-    return [post for post in posts if is_name_match(doctor_full_name, post.get("authorMeta", {}).get("name", ""), threshold)]
-def classify_kol_dol(score): return "KOL" if score >= 8 else "DOL" if score >= 5 else "Not Suitable"
-def classify_sentiment(score): return "Positive" if score > 0.15 else "Negative" if score < -0.15 else "Neutral"
+def normalize_name(name):
+    return re.sub(r"[^\w\s]", "", name.lower()).strip()
+
+def classify_kol_dol(score):
+    return "KOL" if score >= 8 else "DOL" if score >= 5 else "Not Suitable"
+
+def classify_sentiment(score):
+    return "Positive" if score > 0.15 else "Negative" if score < -0.15 else "Neutral"
 
 def generate_rationale(text, transcript, author, score, sentiment, mode):
     all_text = f"{text or ''} {transcript or ''}".lower()
@@ -103,13 +106,20 @@ def generate_rationale(text, transcript, author, score, sentiment, mode):
     name = author or "This creator"
     rationale = ""
     if "Doctor" in mode:
-        if score >= 8: rationale = f"{name} is highly influential,"
-        elif score >= 5: rationale = f"{name} has moderate relevance,"
-        else: rationale = f"{name} does not actively discuss core campaign topics,"
-        if tags["onco"]: rationale += " frequently engaging in oncology content"
-        if tags["gi"]: rationale += ", particularly in GI-focused diseases"
-        if tags["res"]: rationale += " and demonstrating strong research credibility"
-        if tags["brand"]: rationale += ", mentioning monoclonal therapies or campaign drugs"
+        if score >= 8:
+            rationale = f"{name} is highly influential,"
+        elif score >= 5:
+            rationale = f"{name} has moderate relevance,"
+        else:
+            rationale = f"{name} does not actively discuss core campaign topics,"
+        if tags["onco"]:
+            rationale += " frequently engaging in oncology content"
+        if tags["gi"]:
+            rationale += ", particularly in GI-focused diseases"
+        if tags["res"]:
+            rationale += " and demonstrating strong research credibility"
+        if tags["brand"]:
+            rationale += ", mentioning monoclonal therapies or campaign drugs"
         if transcript and "not found" not in transcript:
             rationale += f'. Transcript: “{transcript[:90].strip()}...”'
         else:
@@ -128,7 +138,8 @@ def retry_with_backoff(func, max_retries=3, base_delay=2):
         attempt = 0
         last_exception = None
         while attempt < max_retries:
-            try: return func(*args, **kwargs)
+            try:
+                return func(*args, **kwargs)
             except Exception as e:
                 last_exception = e
                 attempt += 1
@@ -138,25 +149,34 @@ def retry_with_backoff(func, max_retries=3, base_delay=2):
 
 @retry_with_backoff
 def call_openai(prompt, openai_api_key, model, temperature, max_tokens):
-    if not openai: return "OpenAI SDK not installed."
-    if not openai_api_key: return "No OpenAI key."
+    if not openai:
+        return "OpenAI SDK not installed."
+    if not openai_api_key:
+        return "No OpenAI key."
     client = openai.OpenAI(api_key=openai_api_key)
     kwargs = dict(model=model, messages=[{"role": "user", "content": prompt}], temperature=temperature)
-    if max_tokens > 0: kwargs["max_tokens"] = max_tokens
+    if max_tokens > 0:
+        kwargs["max_tokens"] = max_tokens
     response = client.chat.completions.create(**kwargs)
-    return response.choices.message.content.strip()
+    return response.choices[0].message.content.strip()
 
 @retry_with_backoff
 def call_gemini(prompt, gemini_api_key, model, temperature, max_tokens, reasoning_effort=None, reasoning_summary=None):
-    if not genai: return "Gemini SDK not installed."
-    if not gemini_api_key: return "No Gemini key."
+    if not genai:
+        return "Gemini SDK not installed."
+    if not gemini_api_key:
+        return "No Gemini key."
     genai.configure(api_key=gemini_api_key)
     model_obj = genai.GenerativeModel(model)
     params = dict(prompt=prompt)
-    if max_tokens > 0: params["max_tokens"] = max_tokens
-    if temperature is not None: params["temperature"] = temperature
-    if reasoning_effort and reasoning_effort != "None": params["reasoning_effort"] = reasoning_effort.lower()
-    if reasoning_summary and reasoning_summary != "None": params["reasoning_summary"] = reasoning_summary.lower()
+    if max_tokens > 0:
+        params["max_tokens"] = max_tokens
+    if temperature is not None:
+        params["temperature"] = temperature
+    if reasoning_effort and reasoning_effort != "None":
+        params["reasoning_effort"] = reasoning_effort.lower()
+    if reasoning_summary and reasoning_summary != "None":
+        params["reasoning_summary"] = reasoning_summary.lower()
     response = model_obj.generate_content(**params)
     return getattr(response, "text", str(response)).strip()
 
@@ -173,7 +193,7 @@ def get_llm_response(prompt, provider, openai_api_key=None, gemini_api_key=None,
 
 def generate_llm_notes(posts_df, note_template, provider, openai_api_key=None, gemini_api_key=None, openai_model=None, openai_temperature=0.6, openai_max_tokens=512, gemini_model=None, gemini_temperature=0.6, gemini_max_tokens=512, gemini_reasoning_effort=None, gemini_reasoning_summary=None):
     posts_texts = "\n\n".join(
-        [ f"{i+1}. Author: {row['Author']}\nContent: {row['Text']}\nTranscript: {row['Transcript']}" for i, row in posts_df.iterrows() ]
+        [f"{i+1}. Author: {row['Author']}\nContent: {row['Text']}\nTranscript: {row['Transcript']}" for i, row in posts_df.iterrows()]
     )
     prompt = f"""Using the following social posts, generate notes for KOL/DOL vetting in this structure:
 {note_template}
@@ -297,42 +317,25 @@ def process_posts(posts, transcript_map, fetch_time=None, last_fetch_time=None):
     return pd.DataFrame(results)
 
 # ---- MAIN APP FLOW ----
-if st.button("Go 🚀", use_container_width=True) and apify_api_key:
+if st.button("Go 🚀", use_container_width=True) and apify_api_key and search_queries:
     st.session_state["analysis_count"] += 1
     fetch_time = datetime.now()
     last_fetch_time = st.session_state["last_fetch_time"]
     all_results = []
-    if doctor_names:
-        for doc_name in doctor_names:
-            st.info(f"Searching posts for doctor: {doc_name}")
-            raw_posts = run_apify_scraper_batched(apify_api_key, doc_name, int(target_total), int(batch_size))
-            if not raw_posts:
-                st.warning(f"No TikTok posts found for {doc_name}.")
-                continue
-            matched_posts = filter_posts_by_doctor(raw_posts, doc_name, threshold=85)
-            if not matched_posts:
-                st.warning(f"No TikTok posts matched fuzzy author name for {doc_name}.")
-                continue
-            video_urls = [
-                f'https://www.tiktok.com/@{p.get("authorMeta", {}).get("name","")}/video/{p.get("id","")}'
-                for p in matched_posts
-            ]
-            transcript_map = fetch_tiktok_transcripts_apify(apify_api_key, video_urls)
-            df = process_posts(matched_posts, transcript_map=transcript_map, fetch_time=fetch_time, last_fetch_time=last_fetch_time)
-            df["Doctor Name"] = doc_name
-            all_results.append(df)
-    else:
-        tiktok_data = run_apify_scraper_batched(apify_api_key, query, int(target_total), int(batch_size))
-        if not tiktok_data:
-            st.warning("No TikTok posts found.")
-        else:
-            video_urls = [
-                f'https://www.tiktok.com/@{p.get("authorMeta", {}).get("name","")}/video/{p.get("id","")}'
-                for p in tiktok_data
-            ]
-            transcript_map = fetch_tiktok_transcripts_apify(apify_api_key, video_urls)
-            df = process_posts(tiktok_data, transcript_map=transcript_map, fetch_time=fetch_time, last_fetch_time=last_fetch_time)
-            all_results.append(df)
+    for query_text in search_queries:
+        st.info(f"Searching TikTok for: {query_text}")
+        raw_posts = run_apify_scraper_batched(apify_api_key, query_text, int(target_total), int(batch_size))
+        if not raw_posts:
+            st.warning(f"No TikTok posts found for {query_text}.")
+            continue
+        video_urls = [
+            f'https://www.tiktok.com/@{p.get("authorMeta", {}).get("name","")}/video/{p.get("id","")}'
+            for p in raw_posts
+        ]
+        transcript_map = fetch_tiktok_transcripts_apify(apify_api_key, video_urls)
+        df = process_posts(raw_posts, transcript_map=transcript_map, fetch_time=fetch_time, last_fetch_time=last_fetch_time)
+        df["Query"] = query_text
+        all_results.append(df)
     if all_results:
         combined_df = pd.concat(all_results, ignore_index=True)
         st.session_state["last_fetch_time"] = fetch_time
@@ -345,13 +348,12 @@ df = st.session_state.get("tiktok_df", pd.DataFrame())
 if not df.empty:
     st.metric("TikTok Posts Analyzed", len(df))
     st.subheader("📋 TikTok Analysis Results")
-    if doctor_names:
-        unique_doctors = df["Doctor Name"].unique().tolist()
-        selected_doctor = st.selectbox("Filter by Doctor", ["All"] + unique_doctors)
-        if selected_doctor != "All":
-            df = df[df["Doctor Name"] == selected_doctor]
+    unique_queries = df["Query"].unique().tolist()
+    selected_query = st.selectbox("Filter by Query", ["All"] + unique_queries)
+    if selected_query != "All":
+        df = df[df["Query"] == selected_query]
     tiktok_cols = [
-        "Doctor Name", "Author", "Text", "Transcript", "Likes", "Views", "Comments", "Shares",
+        "Query", "Author", "Text", "Transcript", "Likes", "Views", "Comments", "Shares",
         "DOL Score", "Sentiment Score", "Post URL", "KOL/DOL Status", "Brand Sentiment Label",
         "LLM DOL Score Rationale", "Timestamp", "Data Fetched At", "Is New",
     ]
@@ -360,12 +362,12 @@ if not df.empty:
         columns = tiktok_cols
     elif display_option == "Only main info":
         columns = [
-            "Doctor Name", "Author", "Text", "Likes", "Views", "Comments", "Shares",
+            "Query", "Author", "Text", "Likes", "Views", "Comments", "Shares",
             "DOL Score", "Timestamp", "Is New",
         ]
     else:
         columns = [
-            "Doctor Name", "Author", "KOL/DOL Status", "DOL Score", "Sentiment Score",
+            "Query", "Author", "KOL/DOL Status", "DOL Score", "Sentiment Score",
             "Brand Sentiment Label", "Is New",
         ]
     dol_min, dol_max = st.slider("Select DOL Score Range", 1, 10, (1, 10))
@@ -380,7 +382,6 @@ if not df.empty:
     if st.checkbox("Show Raw TikTok Data"):
         st.subheader("Raw TikTok Data")
         st.dataframe(df, use_container_width=True)
-
     st.subheader("📝 LLM Notes & Suitability Scoring")
     default_template = """Summary:
 Relevance:
