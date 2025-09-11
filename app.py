@@ -483,8 +483,7 @@ def process_posts(posts, transcript_map, fetch_time=None, last_fetch_time=None):
             continue
     return pd.DataFrame(results)
 
-# ----------- MAIN APP FLOW -----------
-
+# --- MAIN APP FLOW ---
 if st.button("Go 🚀", use_container_width=True) and apify_api_key:
     st.session_state["analysis_count"] += 1
     fetch_time = datetime.now()
@@ -493,17 +492,28 @@ if st.button("Go 🚀", use_container_width=True) and apify_api_key:
     all_results = []
 
     if doctor_names:
-        # Batch process each doctor with fuzzy name filtering
         for doc_name in doctor_names:
             st.info(f"Searching posts for doctor: {doc_name}")
             raw_posts = run_apify_scraper_batched(apify_api_key, doc_name, int(target_total), int(batch_size))
             if not raw_posts:
                 st.warning(f"No TikTok posts found for {doc_name}.")
                 continue
+
+            # Debugging: Show author similarity scores in expander
+            similarity_data = []
+            for p in raw_posts:
+                author_name = p.get("authorMeta", {}).get("name", "")
+                score = fuzz.token_sort_ratio(normalize_name(doc_name), normalize_name(author_name))
+                similarity_data.append({"Author": author_name, "Similarity Score": score})
+            with st.expander(f"Show Fuzzy Match Scores for '{doc_name}'"):
+                sim_df = pd.DataFrame(similarity_data).sort_values(by="Similarity Score", ascending=False)
+                st.dataframe(sim_df)
+
             matched_posts = filter_posts_by_doctor(raw_posts, doc_name, threshold=85)
             if not matched_posts:
                 st.warning(f"No TikTok posts matched fuzzy author name for {doc_name}.")
                 continue
+
             video_urls = [
                 f'https://www.tiktok.com/@{p.get("authorMeta", {}).get("name","")}/video/{p.get("id","")}'
                 for p in matched_posts
@@ -513,7 +523,6 @@ if st.button("Go 🚀", use_container_width=True) and apify_api_key:
             df["Doctor Name"] = doc_name
             all_results.append(df)
     else:
-        # Fallback: perform general keyword scraping
         tiktok_data = run_apify_scraper_batched(apify_api_key, query, int(target_total), int(batch_size))
         if not tiktok_data:
             st.warning("No TikTok posts found.")
@@ -609,6 +618,16 @@ if not df.empty:
         st.subheader("Raw TikTok Data")
         st.dataframe(df, use_container_width=True)
 
+    # Add popup info for DOL/KOL score explanation
+    if st.button("What does the DOL/KOL score mean?"):
+        st.info(
+            """The DOL (Digital Opinion Leader) score is a numerical rating (1–10) that evaluates the relevance and influence of a TikTok content creator in the context of healthcare vetting.
+- **Higher scores (8-10)** indicate top-tier key opinion leaders (KOLs) with strong expertise and engagement.
+- **Mid-range scores (5-7)** suggest moderate influence or emerging leaders (DOLs).
+- **Lower scores (1-4)** represent creators less suitable for campaigns.
+The score is generated based on sentiment, content relevance, and other factors analyzed by AI."""
+        )
+
     # --- LLM Notes and Scoring (STATEFUL) ---
     st.subheader("📝 LLM Notes & Suitability Scoring")
     default_template = """Summary:
@@ -638,7 +657,7 @@ Research Notes:
                 gemini_reasoning_summary=reasoning_summary if llm_provider == "Google Gemini" else None,
             )
         st.session_state["llm_notes_text"] = notes_text
-        st.session_state["llm_score_result"] = ""  # Clear previous
+        st.session_state["llm_score_result"] = ""
     if st.session_state["llm_notes_text"]:
         st.markdown("#### LLM Vetting Notes")
         st.markdown(st.session_state["llm_notes_text"])
@@ -668,4 +687,8 @@ Research Notes:
     if st.session_state["llm_score_result"]:
         st.markdown("#### LLM DOL/KOL Score & Rationale")
         st.code(st.session_state["llm_score_result"], language="yaml")
+
+
+
+
 
