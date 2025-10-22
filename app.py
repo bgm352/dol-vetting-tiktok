@@ -73,7 +73,7 @@ target_total = st.sidebar.number_input("Total TikTok Videos per Query", min_valu
 batch_size = st.sidebar.number_input("Batch Size per Run", min_value=10, max_value=200, value=20)
 run_mode = st.sidebar.radio("Analysis Type", ["Doctor Vetting (DOL/KOL)", "Brand Vetting (Sentiment)"])
 
-# State initialization
+# Initialize states
 for key, default in [
     ("top_kols", []),
     ("analysis_count", 0),
@@ -86,13 +86,7 @@ for key, default in [
     if key not in st.session_state:
         st.session_state[key] = default
 
-# Define term lists
-ONCOLOGY_TERMS = ["oncology", "cancer", "monoclonal", "checkpoint", "immunotherapy"]
-GI_TERMS = ["biliary tract", "gastric", "gea", "gi", "adenocarcinoma"]
-RESEARCH_TERMS = ["biomarker", "clinical trial", "abstract", "network", "congress"]
-BRAND_TERMS = ["ziihera", "zanidatamab", "brandA", "pd-l1"]
-
-# Core batched scraper
+# Apify scraping pipeline
 @st.cache_data(show_spinner=False, persist="disk")
 def run_apify_scraper_batched(api_key, query, target_total, batch_size):
     MAX_WAIT_SECONDS = 300
@@ -104,15 +98,20 @@ def run_apify_scraper_batched(api_key, query, target_total, batch_size):
 
     try:
         while len(result) < target_total and failures < 5:
-            st.info(f"Launching batch {1+offset//batch_size}: {len(result)} of {target_total}")
-            start_resp = requests.post(run_url, headers={"Authorization": f"Bearer {api_key}"}, json={
-                "searchQueries": [query],
-                "resultsPerPage": batch_size,
-                "searchType": "keyword",
-                "pageNumber": offset // batch_size,
-            })
+            st.info(f"Launching batch {1 + offset // batch_size}: {len(result)} of {target_total}")
+            start_resp = requests.post(
+                run_url,
+                headers={"Authorization": f"Bearer {api_key}"},
+                json={
+                    "searchQueries": [query],
+                    "resultsPerPage": batch_size,
+                    "searchType": "keyword",
+                    "pageNumber": offset // batch_size,
+                },
+            )
 
-            if start_resp.status_code != 200:
+            # FIX: handle both 200 and 201 as success
+            if start_resp.status_code not in [200, 201]:
                 failures += 1
                 st.error(f"Batch request failed: {start_resp.status_code} {start_resp.text}")
                 time.sleep(5)
@@ -120,6 +119,12 @@ def run_apify_scraper_batched(api_key, query, target_total, batch_size):
 
             start = start_resp.json()
             run_id = start.get("data", {}).get("id")
+            if not run_id:
+                failures += 1
+                st.error("No run ID returned from Apify.")
+                continue
+
+            time.sleep(3)  # Allow Apify run to initialize
             batch_start = time.time()
 
             while run_id and (time.time() - batch_start) < MAX_WAIT_SECONDS:
@@ -131,14 +136,23 @@ def run_apify_scraper_batched(api_key, query, target_total, batch_size):
                     break
 
                 resp_json = resp.json()
-                if resp_json.get("data", {}).get("status") == "SUCCEEDED":
+                status = resp_json.get("data", {}).get("status")
+
+                if status == "SUCCEEDED":
                     dataset_id = resp_json["data"].get("defaultDatasetId")
                     break
-                time.sleep(5)
+                elif status in ["READY", "RUNNING"]:
+                    time.sleep(5)
+                else:
+                    st.warning(f"Unexpected status: {status}")
+                    time.sleep(5)
             else:
                 failures += 1
-                st.error("Batch run timed out, retrying.")
-                time.sleep(10)
+                st.error("Batch run timeout, retrying.")
+                continue
+
+            if not dataset_id:
+                st.error("No dataset ID returned — skipping batch.")
                 continue
 
             data_url = f"https://api.apify.com/v2/datasets/{dataset_id}/items"
@@ -151,8 +165,7 @@ def run_apify_scraper_batched(api_key, query, target_total, batch_size):
 
             batch_posts = batch_posts_resp.json()
             if not batch_posts:
-                failures += 1
-                st.error("No posts returned in batch, retrying.")
+                st.warning("No posts returned in this batch. Retrying...")
                 time.sleep(10)
                 continue
 
@@ -162,10 +175,6 @@ def run_apify_scraper_batched(api_key, query, target_total, batch_size):
 
             offset += batch_size
             pbar.progress(min(1.0, len(result) / float(target_total)))
-
-            if len(batch_posts) < batch_size:
-                break
-
             time.sleep(3)
 
     except Exception as e:
@@ -175,35 +184,37 @@ def run_apify_scraper_batched(api_key, query, target_total, batch_size):
     pbar.progress(1.0)
     return result[:target_total]
 
+
 # -------------------------------------------------
 # LAUNCH BUTTON SECTION
 # -------------------------------------------------
 st.markdown("---")
-st.subheader("Run the Analysis")
+st.subheader("Run TikTok Scraper")
 
 if st.button("🚀 Launch App"):
-    if not search_queries:
-        st.warning("Please enter at least one search query before launching.")
-    elif not apify_api_key:
+    if not apify_api_key:
         st.warning("Please enter your Apify API token before launching.")
+    elif not search_queries:
+        st.warning("Please enter at least one search query.")
     else:
-        st.info("Launching TikTok DOL/KOL scraping process...")
+        st.info("Starting TikTok scraping batch...")
         all_results = []
 
         for query in search_queries:
             with st.spinner(f"Processing query: {query}"):
                 try:
                     result = run_apify_scraper_batched(apify_api_key, query, target_total, batch_size)
-                    all_results += result
+                    all_results.extend(result)
                 except Exception as e:
                     st.error(f"Error while processing '{query}': {e}")
 
         if all_results:
             df = pd.DataFrame(all_results)
             st.session_state["tiktok_df"] = df
-            st.success(f"Completed scraping {len(all_results)} posts!")
+            st.success(f"Scraping complete! Retrieved {len(all_results)} posts.")
             st.dataframe(df)
         else:
-            st.error("No results returned. Please check your API token or search terms.")
+            st.error("No results returned. Check API credentials or retry.")
+
 
 
