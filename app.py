@@ -1,21 +1,16 @@
 import streamlit as st
 import requests
 import pandas as pd
-import time
 import json
+import time
 import threading
+from typing import List, Dict
 
-# Dependency check imports
-try:
-    from rapidfuzz import fuzz
-except ModuleNotFoundError:
-    st.error("Missing package: rapidfuzz. Install with 'pip install rapidfuzz'")
-    st.stop()
-
+# Dependency validation ----------------------------------------------------
 try:
     from apify_client import ApifyClient
 except ModuleNotFoundError:
-    st.error("Missing package: apify-client. Install with 'pip install apify-client'")
+    st.error("Missing package: apify-client. Please install with 'pip install apify-client'")
     st.stop()
 
 try:
@@ -28,114 +23,112 @@ try:
 except ImportError:
     genai = None
 
-try:
-    from textblob import TextBlob
-except ModuleNotFoundError:
-    st.error("Missing package: textblob. Install with 'pip install textblob'")
-    st.stop()
+# Page setup ---------------------------------------------------------------
+st.set_page_config(
+    page_title="TikTok DOL/KOL Vetting Tool",
+    layout="wide",
+    page_icon="🩺"
+)
+st.title("🩺 TikTok DOL/KOL Vetting Tool — Batch Scraping, AI Vetting, and Export")
 
-import nltk
-try:
-    nltk.data.find("tokenizers/punkt")
-except LookupError:
-    nltk.download("punkt")
-
-st.set_page_config("TikTok DOL/KOL Vetting Tool", layout="wide", page_icon="🩺")
-st.title("🩺 TikTok DOL/KOL Vetting Tool - Multi-Batch, LLM, Export")
-
-# ---------- Helper Functions ----------
+# -------------------------------------------------------------------------
+# Utility Functions
+# -------------------------------------------------------------------------
 
 @st.cache_data(show_spinner=True, persist="disk")
-def run_apify_scraper_batched(api_key, query, target_total, batch_size):
-    MAX_WAIT_SECONDS = 300
-    result = []
+def run_apify_scraper_batched(api_key: str, query: str, target_total: int, batch_size: int) -> List[Dict]:
+    """
+    Fetch TikTok posts via Apify TikTok Scraper Actor with robust retry and timeout logic.
+    """
     run_url = "https://api.apify.com/v2/acts/clockworks~tiktok-scraper/runs"
+    MAX_WAIT_SECONDS = 300
+    RETRY_LIMIT = 3
+    backoff = 5
+    all_results = []
     offset = 0
-    failures = 0
-    progress_bar = st.progress(0.0, text="Scraping TikTok...")
 
-    while len(result) < target_total and failures < 5:
-        st.info(f"Launching batch {1 + offset // batch_size}: {len(result)} of {target_total}")
-        try:
-            response = requests.post(run_url, headers={"Authorization": f"Bearer {api_key}"},
-                                     json={"searchQueries": [query], "resultsPerPage": batch_size,
-                                           "searchType": "keyword", "pageNumber": offset // batch_size},
-                                     timeout=60)
-            if response.status_code not in [200, 201]:
-                failures += 1
-                st.error(f"Batch request failed: {response.status_code} {response.text}")
-                time.sleep(5)
-                continue
+    progress = st.progress(0.0, text=f"Initializing scraping for query: {query}")
 
-            data = response.json()
-            run_id = data.get("data", {}).get("id")
-            if not run_id:
-                failures += 1
-                st.error("No run ID returned from Apify.")
-                continue
+    try:
+        while len(all_results) < target_total:
+            for attempt in range(1, RETRY_LIMIT + 1):
+                try:
+                    response = requests.post(
+                        run_url,
+                        headers={"Authorization": f"Bearer {api_key}"},
+                        json={
+                            "searchQueries": [query],
+                            "resultsPerPage": batch_size,
+                            "searchType": "keyword",
+                            "pageNumber": offset // batch_size,
+                        },
+                        timeout=60,
+                    )
+                    if response.status_code not in [200, 201]:
+                        raise requests.HTTPError(f"{response.status_code}: {response.text}")
 
-            time.sleep(3)  # Allow Apify to initialize
-            start_time = time.time()
-            dataset_id = None
+                    run_id = response.json().get("data", {}).get("id")
+                    if not run_id:
+                        raise ValueError("Apify did not return a valid run ID.")
+                    time.sleep(3)
 
-            while time.time() - start_time < MAX_WAIT_SECONDS:
-                status_resp = requests.get(f"{run_url}/{run_id}", headers={"Authorization": f"Bearer {api_key}"}, timeout=30)
-                if status_resp.status_code != 200:
-                    failures += 1
-                    st.error(f"Failed to get batch status: {status_resp.status_code}")
-                    time.sleep(5)
+                    # Poll for status
+                    start_time = time.time()
+                    dataset_id = None
+                    while time.time() - start_time < MAX_WAIT_SECONDS:
+                        status_resp = requests.get(
+                            f"{run_url}/{run_id}",
+                            headers={"Authorization": f"Bearer {api_key}"},
+                            timeout=30
+                        )
+                        data = status_resp.json().get("data", {})
+                        if data.get("status") == "SUCCEEDED":
+                            dataset_id = data.get("defaultDatasetId")
+                            break
+                        time.sleep(5)
+
+                    if not dataset_id:
+                        raise TimeoutError("Actor run did not finish within allowed time.")
+
+                    # Retrieve dataset
+                    dataset_resp = requests.get(
+                        f"https://api.apify.com/v2/datasets/{dataset_id}/items?clean=True",
+                        headers={"Authorization": f"Bearer {api_key}"},
+                        timeout=60,
+                    )
+                    batch_items = dataset_resp.json()
+                    if not isinstance(batch_items, list):
+                        raise ValueError("Dataset response was not a list.")
+
+                    all_results.extend(batch_items)
+                    offset += batch_size
+                    progress.progress(min(1.0, len(all_results) / float(target_total)))
                     break
+                except Exception as e:
+                    if attempt == RETRY_LIMIT:
+                        st.error(f"Failed batch for '{query}': {e}")
+                    else:
+                        time.sleep(backoff * attempt)
+            if len(all_results) >= target_total:
+                break
+        progress.progress(1.0)
+    except Exception as e:
+        st.error(f"Scraper critical error: {e}")
 
-                status_json = status_resp.json()
-                status = status_json.get("data", {}).get("status")
+    return all_results[:target_total]
 
-                if status == "SUCCEEDED":
-                    dataset_id = status_json["data"].get("defaultDatasetId")
-                    break
-                elif status in ["READY", "RUNNING"]:
-                    time.sleep(5)
-                else:
-                    st.warning(f"Unexpected status: {status}")
-                    time.sleep(5)
 
-            if not dataset_id:
-                failures += 1
-                st.error("No dataset ID returned; skipping batch.")
-                continue
+def analyze_and_score(tiktok_data: List[Dict], model="gpt-4", api_provider="OpenAI", temperature=0.3) -> pd.DataFrame:
+    """
+    Send TikTok post data to OpenAI or Gemini to assess influence and identify KOLs/DOLs.
+    """
+    prompt = (
+        "Analyze the given TikTok profiles and output a JSON array with fields: "
+        "'profile', 'influence_score' (0-1), and 'key_opinion_leader' (true/false). "
+        "Be concise, structured, and strictly JSON:\n\n"
+        f"{json.dumps(tiktok_data[:5], indent=2)}"
+    )
 
-            data_url = f"https://api.apify.com/v2/datasets/{dataset_id}/items"
-            posts_resp = requests.get(data_url, timeout=30)
-            if posts_resp.status_code != 200:
-                failures += 1
-                st.error(f"Failed to fetch batch posts: {posts_resp.status_code}")
-                time.sleep(5)
-                continue
-
-            posts = posts_resp.json()
-            if not posts:
-                st.warning("No posts returned in this batch; retrying...")
-                time.sleep(10)
-                continue
-
-            for post in posts:
-                if post not in result:
-                    result.append(post)
-
-            offset += batch_size
-            progress_bar.progress(min(1.0, len(result) / target_total))
-            time.sleep(1)
-
-        except requests.RequestException as e:
-            failures += 1
-            st.error(f"API error: {e}")
-            time.sleep(5)
-            continue
-
-    progress_bar.progress(1.0)
-    return result[:target_total]
-
-def analyze_and_score(tiktok_data, model="gpt-4", api_provider="OpenAI", temperature=0.3):
-    prompt = f"Analyze these TikTok profiles and return a JSON array with: 'profile', 'influence_score' (0-1), 'key_opinion_leader' (true/false):\n{tiktok_data}"
     try:
         if api_provider == "OpenAI":
             response = openai.ChatCompletion.create(
@@ -146,124 +139,131 @@ def analyze_and_score(tiktok_data, model="gpt-4", api_provider="OpenAI", tempera
             )
             result_text = response.choices[0].message["content"]
         else:
-            # Add Gemini API integration here; placeholder for now
+            # TODO: Implement Gemini API (placeholder)
             result_text = "[]"
 
-        scores = json.loads(result_text)
-        df = pd.DataFrame(scores)
-        expected_cols = {"profile", "influence_score", "key_opinion_leader"}
-        if not expected_cols.issubset(df.columns):
-            raise ValueError("Missing expected fields in AI response")
-
+        scores_json = json.loads(result_text)
+        df = pd.DataFrame(scores_json)
+        if not {"profile", "influence_score", "key_opinion_leader"}.issubset(df.columns):
+            raise ValueError("Missing fields in model output.")
         return df
-
     except json.JSONDecodeError:
-        st.error("Could not parse AI model response; please verify formatting.")
+        st.error("Model returned invalid JSON. Check prompt or retry.")
     except Exception as e:
-        st.error(f"Error during AI vetting: {e}")
-
+        st.error(f"AI vetting error: {str(e)}")
     return pd.DataFrame(columns=["profile", "influence_score", "key_opinion_leader"])
 
-def run_async(func, *args):
-    result_container = {}
 
-    def wrapper():
-        result_container["result"] = func(*args)
+def run_thread(func, *args):
+    """Execute a blocking job in a background thread safely."""
+    result = {}
 
-    thread = threading.Thread(target=wrapper)
-    thread.start()
-    return thread, result_container
+    def target():
+        try:
+            result["data"] = func(*args)
+        except Exception as e:
+            result["error"] = str(e)
 
-# ---------- UI Components and Workflow ----------
+    t = threading.Thread(target=target)
+    t.start()
+    t.join()
 
-apify_api_key = st.sidebar.text_input("Apify API Token", type="password")
+    if "error" in result:
+        raise RuntimeError(result["error"])
+    return result.get("data")
+
+
+# -------------------------------------------------------------------------
+# UI
+# -------------------------------------------------------------------------
+st.sidebar.header("Configuration")
+apify_api_key = st.sidebar.text_input("Apify API Key", type="password")
 llm_provider = st.sidebar.selectbox("LLM Provider", ["OpenAI GPT", "Google Gemini"])
 
-with st.sidebar.expander("Advanced Options", expanded=True):
-    if llm_provider == "OpenAI GPT":
-        model = st.selectbox("AI Model", ["gpt-4", "gpt-3.5-turbo", "gpt-4o-mini-2025-04-16"])
-        temperature = st.slider("Temperature", 0.0, 2.0, 0.6)
-        max_tokens = st.number_input("Max Completion Tokens", min_value=0, max_value=4096, value=512)
-        openai_api_key = st.text_input("OpenAI API Key", type="password")
-    else:
-        model = st.selectbox("AI Model", ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"])
-        temperature = st.slider("Temperature", 0.0, 2.0, 0.6)
-        max_tokens = st.number_input("Max Completion Tokens", min_value=0, max_value=4096, value=512)
-        reasoning_effort = st.selectbox("Reasoning Effort", ["None", "Low", "Medium", "High"], index=0)
-        reasoning_summary = st.selectbox("Reasoning Summary", ["None", "Concise", "Detailed", "Auto"], index=0)
-        gemini_api_key = st.text_input("Gemini API Key", type="password")
+if llm_provider == "OpenAI GPT":
+    openai_api_key = st.sidebar.text_input("OpenAI API Key", type="password")
+    if openai_api_key:
+        openai.api_key = openai_api_key
+    model = st.sidebar.selectbox("Model", ["gpt-4", "gpt-4-turbo", "gpt-3.5-turbo"])
+else:
+    gemini_api_key = st.sidebar.text_input("Gemini API Key", type="password")
+    model = st.sidebar.selectbox("Model", ["gemini-2.5-pro", "gemini-2.5-flash"])
+
+temperature = st.sidebar.slider("Temperature", 0.0, 1.0, 0.4)
+st.sidebar.markdown("---")
 
 st.sidebar.header("Scrape Controls")
-search_queries_text = st.sidebar.text_area("Enter Search Queries (Doctor name, Specialty, Location) one per line",
-                                           height=200,
-                                           help="Example: Pashtoon Kasi Medical Oncology New York NY")
-search_queries = [q.strip() for q in search_queries_text.splitlines() if q.strip()]
-target_total = st.sidebar.number_input("Total TikTok Videos per Query", min_value=10, value=100, step=10)
-batch_size = st.sidebar.number_input("Batch Size per Run", min_value=10, max_value=200, value=20)
-run_mode = st.sidebar.radio("Analysis Type", ["Doctor Vetting (DOL/KOL)", "Brand Vetting (Sentiment)"])
+queries_text = st.sidebar.text_area("TikTok Search Queries (one per line)", help="Example: oncology New York")
+queries = [q.strip() for q in queries_text.splitlines() if q.strip()]
+target_total = st.sidebar.number_input("Posts per query", min_value=10, value=100, step=10)
+batch_size = st.sidebar.number_input("Batch size", min_value=10, max_value=200, value=20)
 
-if "tiktok_df" not in st.session_state:
-    st.session_state["tiktok_df"] = pd.DataFrame()
+if "tiktok_data" not in st.session_state:
+    st.session_state["tiktok_data"] = pd.DataFrame()
 
-# Launch Scraper Button & Async Handling
-def launch_scraper():
+# -------------------------------------------------------------------------
+# Scraping and Vetting Workflow
+# -------------------------------------------------------------------------
+def start_scraping():
     if not apify_api_key:
-        st.warning("Please enter your Apify API token.")
+        st.warning("Enter your Apify API key.")
         return
-    if not search_queries:
-        st.warning("Please enter at least one search query.")
+    if not queries:
+        st.warning("Enter at least one TikTok search query.")
         return
 
-    thread, container = run_async(run_apify_scraper_batched, apify_api_key, search_queries[0], target_total, batch_size)
-    with st.spinner("Scraping TikTok... please wait"):
-        thread.join()
-    results = container.get("result", [])
-    if results:
-        df = pd.DataFrame(results)
-        st.session_state["tiktok_df"] = df
-        st.success(f"Scraping complete! {len(results)} posts retrieved.")
+    all_results = []
+    for query in queries:
+        with st.spinner(f"Scraping TikTok posts for '{query}'..."):
+            data = run_thread(run_apify_scraper_batched, apify_api_key, query, target_total, batch_size)
+            all_results.extend(data or [])
+    df = pd.DataFrame(all_results)
+    st.session_state["tiktok_data"] = df
+    if not df.empty:
+        st.success(f"Retrieved {len(df)} posts across {len(queries)} queries.")
         st.dataframe(df)
     else:
-        st.error("No results returned from scraper.")
+        st.error("No results. Please check your Apify key or query settings.")
 
-if st.button("🚀 Launch Scraper"):
-    launch_scraper()
 
-# Analyze & Score Influence Button & Async Handling
-def launch_ai_vetting():
-    if "tiktok_df" not in st.session_state or st.session_state["tiktok_df"].empty:
-        st.warning("No TikTok data to analyze.")
+def start_vetting():
+    df = st.session_state.get("tiktok_data", pd.DataFrame())
+    if df.empty:
+        st.warning("Please run the scraper first.")
         return
 
-    api_provider = "OpenAI" if llm_provider == "OpenAI GPT" else "Gemini"
-    key = openai_api_key if llm_provider == "OpenAI GPT" else gemini_api_key
-    if not key:
-        st.warning(f"Enter your {llm_provider} API key first.")
+    provider = "OpenAI" if llm_provider == "OpenAI GPT" else "Gemini"
+    key_valid = openai_api_key if provider == "OpenAI" else gemini_api_key
+    if not key_valid:
+        st.warning(f"Please provide a valid API key for {provider}.")
         return
 
-    if llm_provider == "OpenAI GPT":
-        openai.api_key = key
-    else:
-        # Gemini setup placeholder
-        pass
+    with st.spinner("Analyzing TikTok profiles..."):
+        try:
+            result_df = run_thread(analyze_and_score, df.to_dict("records"), model, provider, temperature)
+            if not result_df.empty:
+                st.session_state["vetting_results"] = result_df
+                st.success("AI vetting complete!")
+                st.dataframe(result_df)
+                st.download_button("Download Results CSV", result_df.to_csv(index=False), "vetting_results.csv")
+            else:
+                st.error("AI did not return valid scores.")
+        except Exception as e:
+            st.error(f"Vetting failed: {e}")
 
-    data_to_score = st.session_state["tiktok_df"].to_dict("records")
 
-    thread, container = run_async(analyze_and_score, data_to_score, model=model, api_provider=api_provider, temperature=temperature)
-    with st.spinner("Analyzing TikTok data and scoring influence..."):
-        thread.join()
+# -------------------------------------------------------------------------
+# Buttons
+# -------------------------------------------------------------------------
+st.markdown("---")
+col1, col2 = st.columns(2)
+with col1:
+    if st.button("🚀 Run TikTok Scraper"):
+        start_scraping()
+with col2:
+    if st.button("🤖 Run AI Vetting"):
+        start_vetting()
 
-    scores_df = container.get("result", pd.DataFrame())
-    if not scores_df.empty:
-        st.session_state["llm_score_result"] = scores_df
-        st.success("AI vetting complete!")
-        st.dataframe(scores_df)
-        st.download_button("Download Scores CSV", data=scores_df.to_csv(index=False), file_name="influence_scores.csv")
-    else:
-        st.error("AI vetting returned no results.")
-
-if st.button("Analyze & Score Influence"):
-    launch_ai_vetting()
 
 
 
